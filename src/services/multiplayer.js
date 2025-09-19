@@ -1,0 +1,567 @@
+import { db, auth } from "../firebaseClient";
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  runTransaction,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+
+// ------------- Duelos (1v1) -------------
+
+export async function enqueueForDuel(nickname) {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No auth");
+  
+  console.log("🚀 enqueueForDuel iniciado para usuario:", user.uid, "nickname:", nickname);
+  
+  // Usar la colección duel_queue que ya tiene permisos
+  const qRef = doc(db, "duel_queue", user.uid);
+  
+  try {
+    // Solo agregar el usuario a la cola individual
+    await setDoc(qRef, {
+      uid: user.uid,
+      nickname: nickname || null,
+      createdAt: serverTimestamp(),
+      status: "waiting",
+    });
+    
+    console.log("✅ Usuario agregado a la cola individual");
+    
+    // NO hacer matchmaking aquí - solo agregar a la cola
+    // El matchmaking se hará cuando haya 2+ jugadores
+    return { matchId: null, matched: false };
+  } catch (error) {
+    console.error("❌ Error agregando a la cola:", error);
+    throw error;
+  }
+}
+
+export async function tryMatchmake() {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No auth");
+
+  console.log("🔍 Intentando matchmaking para usuario:", user.uid);
+
+  // Consulta simplificada sin orderBy para evitar necesidad de índice
+  const q = query(collection(db, "duel_queue"), where("status", "==", "waiting"));
+  const snap = await getDocs(q);
+  const candidates = snap.docs
+    .map(doc => ({ id: doc.id, ...doc.data() }))
+    .filter(d => d.uid !== user.uid)
+    .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+  
+  console.log("👥 Candidatos encontrados:", candidates.length);
+  
+  const candidate = candidates[0]; // Tomar el más antiguo
+  if (!candidate) {
+    console.log("❌ No hay candidatos disponibles");
+    return null;
+  }
+
+  console.log("🎯 Candidato seleccionado:", candidate.uid);
+
+  const opponent = candidate;
+
+  // Crear un match real en duel_matches usando transacción para evitar duplicados
+  try {
+    const matchRef = doc(collection(db, "duel_matches"));
+    const matchId = matchRef.id;
+    
+    console.log("✅ Creando match real en Firestore:", matchId);
+    
+    // Obtener el nickname del usuario actual desde su perfil
+    const userProfileRef = doc(db, "users", user.uid);
+    const userProfileSnap = await getDoc(userProfileRef);
+    const userNickname = userProfileSnap.exists() ? userProfileSnap.data().nickname : null;
+    
+    // Crear el documento del match primero
+    await setDoc(matchRef, {
+      createdAt: serverTimestamp(),
+      state: "playing",
+      round: 1,
+      hostUid: user.uid, // El primer usuario es el host
+      players: {
+        [user.uid]: { hp: 6000, nickname: userNickname },
+        [opponent.uid]: { hp: 6000, nickname: opponent.nickname || "Jugador" },
+      },
+      rounds: {},
+      guesses: {},
+    });
+
+    // Actualizar solo nuestro documento de cola
+    const meRef = doc(db, "duel_queue", user.uid);
+    await updateDoc(meRef, { 
+      status: "matched", 
+      matchId: matchId,
+      opponentUid: opponent.uid,
+      opponentNickname: opponent.nickname || null
+    });
+
+    console.log("✅ Match creado exitosamente en Firestore:", matchId);
+    return matchId; // Retornar el ID real del match
+  } catch (error) {
+    console.log("❌ Error en matchmaking:", error);
+    return null;
+  }
+}
+
+// Mantener heartbeat para indicar que el usuario sigue activo
+export async function updateHeartbeat() {
+  const user = auth.currentUser;
+  if (!user) return;
+  
+  const qRef = doc(db, "duel_queue", user.uid);
+  
+  try {
+    await updateDoc(qRef, {
+      lastSeen: serverTimestamp()
+    });
+  } catch (error) {
+    console.log("Error actualizando heartbeat:", error);
+  }
+}
+
+// Escuchar la cola de matchmaking
+export function listenMatchmakingQueue(cb) {
+  const user = auth.currentUser;
+  if (!user) return () => {};
+  
+  const q = query(collection(db, "duel_queue"), where("status", "==", "waiting"));
+  return onSnapshot(q, (snapshot) => {
+    const waitingPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const myPosition = waitingPlayers.findIndex(p => p.uid === user.uid);
+    
+    console.log("📊 Cola actualizada:", waitingPlayers.length, "jugadores, mi posición:", myPosition + 1);
+    
+    cb({
+      waitingPlayers: waitingPlayers.length,
+      myPosition: myPosition >= 0 ? myPosition + 1 : -1,
+      players: waitingPlayers
+    });
+  });
+}
+
+
+// Escuchar si nuestro oponente fue emparejado
+export function listenForOpponentMatch(cb) {
+  const user = auth.currentUser;
+  if (!user) return () => {};
+  
+  const q = query(
+    collection(db, "duel_queue"), 
+    where("opponentUid", "==", user.uid),
+    where("status", "==", "matched")
+  );
+  
+  return onSnapshot(q, (snapshot) => {
+    if (!snapshot.empty) {
+      const matchData = snapshot.docs[0].data();
+      console.log("🎯 Oponente fue emparejado con nosotros:", matchData);
+      
+      // Solo notificar, no actualizar el documento para evitar crear un nuevo match
+      cb(matchData);
+    }
+  });
+}
+
+export async function cancelQueue() {
+  const user = auth.currentUser;
+  if (!user) return;
+  
+  const qRef = doc(db, "duel_queue", user.uid);
+  
+  try {
+    await deleteDoc(qRef);
+    console.log("✅ Usuario removido de la cola");
+  } catch (error) {
+    console.error("Error cancelando cola:", error);
+  }
+}
+
+export function listenQueueDoc(cb) {
+  const user = auth.currentUser;
+  if (!user) return () => {};
+  const qRef = doc(db, "duel_queue", user.uid);
+  return onSnapshot(qRef, (s) => cb(s.exists() ? s.data() : null));
+}
+
+// Escucha la cola completa para detectar cuando hay nuevos oponentes
+export function listenQueueForMatchmaking(cb) {
+  const user = auth.currentUser;
+  if (!user) return () => {};
+  
+  // Consulta simplificada sin orderBy para evitar necesidad de índice
+  const q = query(
+    collection(db, "duel_queue"), 
+    where("status", "==", "waiting")
+  );
+  
+  return onSnapshot(q, (snapshot) => {
+    const waitingPlayers = snapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .filter(player => player.uid !== user.uid)
+      .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0)); // Ordenar en cliente
+    
+    cb(waitingPlayers);
+  });
+}
+
+export function listenMatch(matchId, cb) {
+  const mRef = doc(db, "duel_matches", matchId);
+  return onSnapshot(mRef, (s) => cb({ id: matchId, ...(s.data() || {}) }));
+}
+
+export async function submitRoundResult(matchId, uid, distanceKm) {
+  // daño por distancia (igual que single, pero transformado a daño)
+  const damage = Math.min(50, Math.round(Math.max(0, distanceKm) / 100 * 50));
+  const mRef = doc(db, "duel_matches", matchId);
+  await runTransaction(db, async (tx) => {
+    const mSnap = await tx.get(mRef);
+    if (!mSnap.exists()) return;
+    const data = mSnap.data();
+    const me = data.players?.[uid] || { hp: 6000 };
+    const otherUid = Object.keys(data.players || {}).find((k) => k !== uid);
+    const opp = data.players?.[otherUid] || { hp: 6000 };
+    // restamos vida al oponente basada en nuestra precisión
+    const newHp = Math.max(0, (opp.hp ?? 6000) - damage);
+    const players = { ...data.players, [otherUid]: { ...opp, hp: newHp } };
+    const nextRound = (data.round || 1) + 1;
+    const state = newHp <= 0 ? "finished" : "playing";
+    tx.update(mRef, { players, round: nextRound, state });
+  });
+}
+
+// ------------- Salas privadas (código) -------------
+
+export async function createRoom(nickname) {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No auth");
+  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const roomRef = doc(collection(db, "rooms"));
+  await setDoc(roomRef, {
+    code,
+    hostUid: user.uid,
+    createdAt: serverTimestamp(),
+    state: "lobby",
+  });
+  const playerRef = doc(db, "rooms", roomRef.id, "players", user.uid);
+  await setDoc(playerRef, { uid: user.uid, nickname: nickname || null, joinedAt: serverTimestamp() });
+  return { roomId: roomRef.id, code };
+}
+
+export async function joinRoomByCode(code, nickname) {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No auth");
+  const q = query(collection(db, "rooms"), where("code", "==", code), limit(1));
+  const snap = await getDocs(q);
+  if (snap.empty) throw new Error("Código no válido");
+  const roomDoc = snap.docs[0];
+  const playerRef = doc(db, "rooms", roomDoc.id, "players", user.uid);
+  await setDoc(playerRef, { uid: user.uid, nickname: nickname || null, joinedAt: serverTimestamp() });
+  return roomDoc.id;
+}
+
+export function listenRoom(roomId, cb) {
+  const rRef = doc(db, "rooms", roomId);
+  return onSnapshot(rRef, (s) => cb({ id: roomId, ...(s.data() || {}) }));
+}
+
+export function listenRoomPlayers(roomId, cb) {
+  const pCol = collection(db, "rooms", roomId, "players");
+  const qy = query(pCol, orderBy("joinedAt", "asc"));
+  return onSnapshot(qy, (s) => cb(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+}
+
+export async function leaveRoom(roomId) {
+  const user = auth.currentUser;
+  if (!user) return;
+  const pRef = doc(db, "rooms", roomId, "players", user.uid);
+  const pSnap = await getDoc(pRef);
+  if (pSnap.exists()) await deleteDoc(pRef);
+}
+
+export async function createDuelFromRoom(roomId) {
+  // crea un duelo 1v1 con los jugadores actuales de la sala
+  const rRef = doc(db, "rooms", roomId);
+  const roomSnap = await getDoc(rRef);
+  const playersCol = collection(db, "rooms", roomId, "players");
+  const snap = await getDocs(playersCol);
+  const players = snap.docs.map(d => ({ uid: d.id, ...(d.data() || {}) }));
+  if (players.length < 2) throw new Error("Se necesitan 2 jugadores");
+  const [p1, p2] = players.slice(0, 2);
+  const matchRef = doc(collection(db, "duel_matches"));
+  await setDoc(matchRef, {
+    createdAt: serverTimestamp(),
+    state: "playing",
+    round: 1,
+    hostUid: roomSnap.exists() ? roomSnap.data()?.hostUid || p1.uid : p1.uid,
+    players: {
+      [p1.uid]: { hp: 6000, nickname: p1.nickname || null },
+      [p2.uid]: { hp: 6000, nickname: p2.nickname || null },
+    },
+    rounds: {},
+    guesses: {},
+  });
+  await updateDoc(rRef, { duelMatchId: matchRef.id });
+  return matchRef.id;
+}
+
+export async function setRoundDataIfAbsent(matchId, round, roundData) {
+  const mRef = doc(db, "duel_matches", matchId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(mRef);
+    if (!snap.exists()) return;
+    const data = snap.data();
+    const current = (data.rounds && data.rounds[round]) || null;
+    if (current) return; // ya hay
+    const rounds = { ...(data.rounds || {}) };
+    rounds[round] = roundData;
+    tx.update(mRef, { rounds });
+  });
+}
+
+// Función para calcular puntos como en singleplayer (máx. 5000)
+function calculatePoints(distanceKm, sizeKm = 14916.862) {
+  if (distanceKm <= 100) return 5000; // recompensa perfecta a <100 km
+  const k = 4; // ligeramente más generoso que antes
+  const raw = 5000 * Math.exp((-k * distanceKm) / sizeKm);
+  return Math.min(5000, Math.max(0, Math.round(raw)));
+}
+
+export async function submitGuessAndApplyDamage(matchId, uid, distanceKm, guessLatLng) {
+  const mRef = doc(db, "duel_matches", matchId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(mRef);
+    if (!snap.exists()) return;
+    const data = snap.data();
+    const round = data.round || 1;
+    const players = data.players || {};
+    const otherUid = Object.keys(players).find(k => k !== uid);
+    const rounds = { ...(data.rounds || {}) };
+    const roundData = { ...(rounds[round] || {}) };
+    const roundGuesses = { ...(roundData.guesses || {}) };
+    roundGuesses[uid] = { dist: distanceKm, guess: guessLatLng, distance: distanceKm };
+    roundData.guesses = roundGuesses;
+    rounds[round] = roundData;
+
+    // Si ambos respondieron, calculamos puntos como en singleplayer
+    if (roundGuesses[otherUid] && typeof roundGuesses[otherUid].dist === 'number') {
+      const dA = roundGuesses[uid].dist;
+      const dB = roundGuesses[otherUid].dist;
+      
+      // Calcular puntos para cada jugador (como en singleplayer)
+      const pointsA = calculatePoints(dA);
+      const pointsB = calculatePoints(dB);
+      
+      // Determinar ganador (el que tiene más puntos)
+      const winnerUid = pointsA > pointsB ? uid : otherUid;
+      const loserUid = pointsA > pointsB ? otherUid : uid;
+      const winnerPoints = pointsA > pointsB ? pointsA : pointsB;
+      const loserPoints = pointsA > pointsB ? pointsB : pointsA;
+      
+      // El perdedor pierde la diferencia de puntos
+      let damage = winnerPoints - loserPoints;
+      
+      // Multiplicador de daño progresivo a partir de la ronda 4
+      if (round >= 4) {
+        const multiplier = 1.5 + (round - 4) * 0.5; // Ronda 4: x1.5, Ronda 5: x2.0, Ronda 6: x2.5, etc.
+        damage = Math.round(damage * multiplier);
+        console.log(`🔥 Multiplicador de daño ronda ${round}: x${multiplier} (daño: ${damage})`);
+      }
+      
+      const winner = players[winnerUid] || { hp: 6000 };
+      const loser = players[loserUid] || { hp: 6000 };
+      const newHp = Math.max(0, (loser.hp ?? 6000) - damage);
+      const newPlayers = { ...players, [loserUid]: { ...loser, hp: newHp } };
+      const nextRound = (data.round || 1) + 1;
+      const state = newHp <= 0 ? "finished" : "playing";
+      
+      // Guardar información de daño para mostrar en la UI
+      roundData.damage = {
+        winner: winner.nickname || `Jugador ${winnerUid.slice(0, 6)}`,
+        loser: loser.nickname || `Jugador ${loserUid.slice(0, 6)}`,
+        amount: damage,
+        winnerUid,
+        loserUid,
+        winnerPoints,
+        loserPoints,
+        multiplier: round >= 4 ? 1.5 + (round - 4) * 0.5 : 1,
+        round,
+        distances: {
+          [uid]: dA,
+          [otherUid]: dB
+        }
+      };
+      rounds[round] = roundData;
+      
+      tx.update(mRef, { players: newPlayers, rounds, round: nextRound, state });
+    } else {
+      tx.update(mRef, { rounds });
+    }
+  });
+}
+
+// ------------- Juego Multijugador (2-10 jugadores) -------------
+
+export async function createMultiplayerGameFromRoom(roomId) {
+  // Crea un juego multijugador con los jugadores actuales de la sala
+  const rRef = doc(db, "rooms", roomId);
+  const roomSnap = await getDoc(rRef);
+  const playersCol = collection(db, "rooms", roomId, "players");
+  const snap = await getDocs(playersCol);
+  const players = snap.docs.map(d => ({ uid: d.id, ...(d.data() || {}) }));
+  
+  if (players.length < 2) throw new Error("Se necesitan al menos 2 jugadores");
+  if (players.length > 10) throw new Error("Máximo 10 jugadores");
+  
+  // Crear objeto de jugadores con puntuación inicial
+  const playersObj = {};
+  players.forEach(player => {
+    playersObj[player.uid] = {
+      nickname: player.nickname || null,
+      totalScore: 0
+    };
+  });
+  
+  const gameRef = doc(collection(db, "multiplayer_games"));
+  await setDoc(gameRef, {
+    createdAt: serverTimestamp(),
+    state: "playing",
+    round: 1,
+    hostUid: roomSnap.exists() ? roomSnap.data()?.hostUid || players[0].uid : players[0].uid,
+    players: playersObj,
+    rounds: {},
+    maxRounds: 5
+  });
+  
+  await updateDoc(rRef, { gameId: gameRef.id });
+  return gameRef.id;
+}
+
+export async function setMultiplayerRoundDataIfAbsent(gameId, round, roundData) {
+  const gameRef = doc(db, "multiplayer_games", gameId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef);
+    if (!snap.exists()) return;
+    const data = snap.data();
+    const current = (data.rounds && data.rounds[round]) || null;
+    if (current) return; // ya hay
+    const rounds = { ...(data.rounds || {}) };
+    rounds[round] = roundData;
+    tx.update(gameRef, { rounds });
+  });
+}
+
+export async function submitMultiplayerGuess(gameId, uid, distanceKm, guessLatLng) {
+  const gameRef = doc(db, "multiplayer_games", gameId);
+  
+  await runTransaction(db, async (tx) => {
+    const gameSnap = await tx.get(gameRef);
+    if (!gameSnap.exists()) return;
+    
+    const gameData = gameSnap.data();
+    const round = gameData.round || 1;
+    const rounds = gameData.rounds || {};
+    const roundData = rounds[round] || { guesses: {} };
+    const guesses = roundData.guesses || {};
+    
+    // Guardar el guess del jugador
+    guesses[uid] = {
+      guess: guessLatLng,
+      dist: distanceKm,
+      points: calculatePoints(distanceKm),
+      timestamp: new Date()
+    };
+    
+    roundData.guesses = guesses;
+    rounds[round] = roundData;
+    
+    // Verificar si todos los jugadores han terminado la ronda
+    const players = gameData.players || {};
+    const playerUids = Object.keys(players);
+    const completedGuesses = Object.keys(guesses);
+    
+    if (completedGuesses.length === playerUids.length) {
+      // Todos han terminado, calcular resultados de la ronda
+      const roundResults = calculateMultiplayerRoundResults(guesses, players);
+      roundData.results = roundResults;
+      
+      // Actualizar puntuaciones totales de los jugadores
+      const updatedPlayers = { ...players };
+      Object.entries(roundResults.scores).forEach(([uid, points]) => {
+        updatedPlayers[uid] = {
+          ...updatedPlayers[uid],
+          totalScore: (updatedPlayers[uid].totalScore || 0) + points
+        };
+      });
+      
+      // Verificar si es la última ronda
+      const nextRound = round + 1;
+      const maxRounds = gameData.maxRounds || 5;
+      const isGameFinished = nextRound > maxRounds;
+      
+      if (isGameFinished) {
+        // Determinar ganador
+        const winnerUid = Object.entries(updatedPlayers).reduce((a, b) => 
+          updatedPlayers[a[0]].totalScore > updatedPlayers[b[0]].totalScore ? a : b
+        )[0];
+        
+        tx.update(gameRef, { 
+          players: updatedPlayers, 
+          rounds, 
+          round: nextRound,
+          state: "finished",
+          winner: winnerUid
+        });
+      } else {
+        tx.update(gameRef, { 
+          players: updatedPlayers, 
+          rounds, 
+          round: nextRound
+        });
+      }
+    } else {
+      // Aún faltan jugadores, solo actualizar guesses
+      tx.update(gameRef, { rounds });
+    }
+  });
+}
+
+// Calcular resultados de la ronda multijugador
+function calculateMultiplayerRoundResults(guesses, players) {
+  const results = {
+    scores: {},
+    rankings: []
+  };
+  
+  // Calcular puntos para cada jugador
+  Object.entries(guesses).forEach(([uid, guess]) => {
+    results.scores[uid] = guess.points;
+  });
+  
+  // Crear ranking
+  results.rankings = Object.entries(results.scores)
+    .map(([uid, points]) => ({
+      uid,
+      nickname: players[uid]?.nickname || "Jugador",
+      points,
+      distance: guesses[uid].dist
+    }))
+    .sort((a, b) => b.points - a.points);
+  
+  return results;
+}
+
+
