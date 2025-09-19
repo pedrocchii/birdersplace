@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../firebaseClient";
 import { doc, getDoc } from "firebase/firestore";
-import { createRoom, joinRoomByCode, listenRoom, listenRoomPlayers, leaveRoom, createDuelFromRoom } from "../services/multiplayer";
+import { createRoom, joinRoomByCode, listenRoom, listenRoomPlayers, leaveRoom, createDuelFromRoom, createMultiplayerGameFromRoom, listenGameReadyNotification } from "../services/multiplayer";
 
 export default function RoomLobby() {
   const [user, setUser] = useState(null);
@@ -14,6 +14,7 @@ export default function RoomLobby() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [duelMatchId, setDuelMatchId] = useState(null);
+  const [gameId, setGameId] = useState(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -27,7 +28,8 @@ export default function RoomLobby() {
   }, []);
 
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !user) return;
+    
     const off1 = listenRoom(roomId, (roomData) => {
       setRoom(roomData);
       if (roomData?.duelMatchId) {
@@ -35,10 +37,26 @@ export default function RoomLobby() {
         // Navegar automáticamente al duelo cuando se detecte
         window.location.href = `?view=duels&match=${roomData.duelMatchId}`;
       }
+      if (roomData?.gameId) {
+        setGameId(roomData.gameId);
+        // Navegar automáticamente al juego multijugador cuando se detecte
+        window.location.href = `?view=multiplayer&game=${roomData.gameId}`;
+      }
     });
+    
     const off2 = listenRoomPlayers(roomId, setPlayers);
-    return () => { off1(); off2(); };
-  }, [roomId]);
+    
+    // Escuchar notificaciones de juego listo
+    const off3 = listenGameReadyNotification(roomId, user.uid, (notification) => {
+      if (notification?.gameId) {
+        console.log("🎮 Notificación de juego listo recibida, navegando...");
+        setGameId(notification.gameId);
+        window.location.href = `?view=multiplayer&game=${notification.gameId}`;
+      }
+    });
+    
+    return () => { off1(); off2(); off3(); };
+  }, [roomId, user]);
 
   async function handleCreate() {
     setError("");
@@ -124,8 +142,12 @@ export default function RoomLobby() {
           <div style={{ marginTop: 12 }}>
             <div style={{ color: "#10b981", fontWeight: 600 }}>¡Redirigiendo al duelo...</div>
           </div>
-        ) : room?.hostUid === user.uid && players.length >= 2 ? (
+        ) : gameId ? (
           <div style={{ marginTop: 12 }}>
+            <div style={{ color: "#10b981", fontWeight: 600 }}>¡Redirigiendo al juego multijugador...</div>
+          </div>
+        ) : room?.hostUid === user.uid && players.length >= 2 ? (
+          <div style={{ marginTop: 12, display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
             <button onClick={async () => {
               setError("");
               setLoading(true);
@@ -144,7 +166,28 @@ export default function RoomLobby() {
             }}
             disabled={loading}
             style={{ padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#8b5cf6", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}>
-              {loading ? "Iniciando..." : "Iniciar duelo"}
+              {loading ? "Iniciando..." : "Iniciar duelo (1v1)"}
+            </button>
+            
+            <button onClick={async () => {
+              setError("");
+              setLoading(true);
+              try {
+                const id = await createMultiplayerGameFromRoom(roomId);
+                setGameId(id);
+                console.log("🎮 Juego multijugador creado:", id);
+                // La navegación se hará automáticamente via notificaciones
+              } catch (e) {
+                // eslint-disable-next-line no-console
+                console.error("create multiplayer game from room", e);
+                setError(e?.message || "No se pudo iniciar el juego multijugador");
+              } finally {
+                setLoading(false);
+              }
+            }}
+            disabled={loading}
+            style={{ padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#f59e0b", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}>
+              {loading ? "Iniciando..." : `Iniciar multijugador (${players.length} jugadores)`}
             </button>
           </div>
         ) : players.length < 2 && (

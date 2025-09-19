@@ -133,6 +133,35 @@ export async function updateHeartbeat() {
   }
 }
 
+// Heartbeat mejorado para salas y juegos
+export async function updateGameHeartbeat(gameId, gameType = "multiplayer") {
+  const user = auth.currentUser;
+  if (!user) return;
+  
+  const collectionName = gameType === "duel" ? "duel_matches" : "multiplayer_games";
+  const gameRef = doc(db, collectionName, gameId);
+  
+  try {
+    await updateDoc(gameRef, {
+      [`players.${user.uid}.lastSeen`]: serverTimestamp()
+    });
+  } catch (error) {
+    console.log("Error actualizando heartbeat del juego:", error);
+  }
+}
+
+// Detectar jugadores desconectados (más de 30 segundos sin actividad)
+export function detectDisconnectedPlayers(players) {
+  const now = Date.now();
+  const disconnectedThreshold = 30000; // 30 segundos
+  
+  return Object.entries(players).filter(([uid, player]) => {
+    if (!player.lastSeen) return false;
+    const lastSeen = player.lastSeen.toDate ? player.lastSeen.toDate() : new Date(player.lastSeen);
+    return (now - lastSeen.getTime()) > disconnectedThreshold;
+  });
+}
+
 // Escuchar la cola de matchmaking
 export function listenMatchmakingQueue(cb) {
   const user = auth.currentUser;
@@ -284,6 +313,18 @@ export function listenRoomPlayers(roomId, cb) {
   return onSnapshot(qy, (s) => cb(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 }
 
+// Escuchar notificaciones de juego listo para un jugador específico
+export function listenGameReadyNotification(roomId, uid, cb) {
+  const notificationRef = doc(db, "rooms", roomId, "players", uid, "notifications", "game_ready");
+  return onSnapshot(notificationRef, (snapshot) => {
+    if (snapshot.exists()) {
+      const data = snapshot.data();
+      console.log(`🎮 Notificación de juego listo recibida:`, data);
+      cb(data);
+    }
+  });
+}
+
 export async function leaveRoom(roomId) {
   const user = auth.currentUser;
   if (!user) return;
@@ -423,31 +464,73 @@ export async function createMultiplayerGameFromRoom(roomId) {
   const snap = await getDocs(playersCol);
   const players = snap.docs.map(d => ({ uid: d.id, ...(d.data() || {}) }));
   
+  console.log(`🎮 Creando juego multijugador con ${players.length} jugadores:`, players.map(p => p.nickname || p.uid.slice(0, 6)));
+  
   if (players.length < 2) throw new Error("Se necesitan al menos 2 jugadores");
   if (players.length > 10) throw new Error("Máximo 10 jugadores");
   
-  // Crear objeto de jugadores con puntuación inicial
+  // Crear objeto de jugadores con puntuación inicial y timestamp de conexión
   const playersObj = {};
+  const now = serverTimestamp();
   players.forEach(player => {
     playersObj[player.uid] = {
       nickname: player.nickname || null,
-      totalScore: 0
+      totalScore: 0,
+      lastSeen: now,
+      connected: true
     };
   });
   
   const gameRef = doc(collection(db, "multiplayer_games"));
-  await setDoc(gameRef, {
-    createdAt: serverTimestamp(),
-    state: "playing",
-    round: 1,
-    hostUid: roomSnap.exists() ? roomSnap.data()?.hostUid || players[0].uid : players[0].uid,
-    players: playersObj,
-    rounds: {},
-    maxRounds: 5
-  });
+  const gameId = gameRef.id;
   
-  await updateDoc(rRef, { gameId: gameRef.id });
-  return gameRef.id;
+  try {
+    await setDoc(gameRef, {
+      createdAt: serverTimestamp(),
+      state: "playing",
+      round: 1,
+      hostUid: roomSnap.exists() ? roomSnap.data()?.hostUid || players[0].uid : players[0].uid,
+      players: playersObj,
+      rounds: {},
+      maxRounds: 5,
+      roomId: roomId // Añadir referencia a la sala original
+    });
+    
+    console.log(`✅ Juego multijugador creado: ${gameId} con ${Object.keys(playersObj).length} jugadores`);
+    
+    await updateDoc(rRef, { gameId: gameId });
+    
+    // Notificar a todos los jugadores que el juego está listo
+    await notifyPlayersGameReady(roomId, gameId, players.map(p => p.uid));
+    
+    return gameId;
+  } catch (error) {
+    console.error("❌ Error creando juego multijugador:", error);
+    throw error;
+  }
+}
+
+// Notificar a todos los jugadores que el juego está listo
+async function notifyPlayersGameReady(roomId, gameId, playerUids) {
+  try {
+    const batch = [];
+    const playersCol = collection(db, "rooms", roomId, "players");
+    
+    // Crear notificaciones para cada jugador
+    playerUids.forEach(uid => {
+      const notificationRef = doc(playersCol, uid, "notifications", "game_ready");
+      batch.push(setDoc(notificationRef, {
+        gameId: gameId,
+        timestamp: serverTimestamp(),
+        type: "game_ready"
+      }));
+    });
+    
+    await Promise.all(batch);
+    console.log(`📢 Notificaciones de juego listo enviadas a ${playerUids.length} jugadores`);
+  } catch (error) {
+    console.error("Error enviando notificaciones:", error);
+  }
 }
 
 export async function setMultiplayerRoundDataIfAbsent(gameId, round, roundData) {
