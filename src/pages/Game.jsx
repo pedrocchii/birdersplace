@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, useMapEvents, useMap, Tooltip } from "react-leaflet";
 import L from "leaflet";
-import { redMarkerIcon } from "../components/mapIcons";
+import { redMarkerIcon, blueMarkerIcon } from "../components/mapIcons";
 import LeafletSizeFix from "../components/LeafletSizeFix";
 import "leaflet/dist/leaflet.css";
 
@@ -46,7 +46,7 @@ function calculatePoints(distanceKm, sizeKm = 14916.862) {
 }
 
 
-export default function Game() {
+export default function Game({ onBack }) {
   const [observation, setObservation] = useState(null);
   const [gallery, setGallery] = useState([]);
   const [lightbox, setLightbox] = useState(null);
@@ -334,7 +334,26 @@ async function loadObservation() {
 
   return (
     <div className="container-narrow" style={{ padding: "1rem", textAlign: "center" }}>
-      <h1 style={{ fontSize: "24px", fontWeight: "bold" }}>Birders Place</h1>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+        <button
+          onClick={onBack || (() => window.history.back())}
+          style={{
+            padding: "0.5rem 1rem",
+            backgroundColor: "#6c757d",
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: "0.5rem",
+          }}
+        >
+          ← Atrás
+        </button>
+        <h1 style={{ fontSize: "24px", fontWeight: "bold", margin: 0 }}>Birders Place</h1>
+        <div style={{ width: "80px" }}></div> {/* Spacer para centrar el título */}
+      </div>
       <button
         onClick={gallery.length === 0 ? loadObservation : handleRestart}
         disabled={isLoading}
@@ -383,7 +402,7 @@ async function loadObservation() {
               />
               <LeafletSizeFix />
               <MapClickHandler />
-              {guess && <Marker position={[guess.lat, guess.lng]} />}
+              {guess && <Marker position={[guess.lat, guess.lng]} icon={blueMarkerIcon} />}
               {confirmed && (
                 <>
                   <FitOnConfirm />

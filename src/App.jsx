@@ -21,7 +21,7 @@ export default function App() {
 
   if (view === "single") return (<>
     <UserBadge />
-    <Game />
+    <Game onBack={() => setView("menu")} />
   </>);
 
   if (view === "login") {
