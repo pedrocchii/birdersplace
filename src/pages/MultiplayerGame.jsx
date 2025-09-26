@@ -142,7 +142,7 @@ export default function MultiplayerGame() {
         const region = selectWeightedRegion();
         const [minLng, minLat, maxLng, maxLat] = region.bbox;
         const randomPage = Math.floor(Math.random() * 100);
-        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3`;
+        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
         
         const randomRes = await fetch(randomUrl);
         if (randomRes.status === 429) {
@@ -165,7 +165,7 @@ export default function MultiplayerGame() {
         const centerLng = base.geojson.coordinates[0];
         const locationName = generateLocationName(centerLat, centerLng);
 
-        const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3`;
+        const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3&captive=false`;
 
         const clusterRes = await fetch(clusterUrl);
         if (clusterRes.status === 429) {
@@ -537,7 +537,22 @@ export default function MultiplayerGame() {
     return (
       <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 480, textAlign: "center" }}>
-          Inicia sesión para jugar.
+          <h2 style={{ marginTop: 0 }}>Juego Multijugador</h2>
+          <p style={{ opacity: 0.85, marginBottom: 20 }}>Inicia sesión para jugar.</p>
+          <button
+            onClick={() => window.location.href = "?view=login"}
+            style={{
+              padding: "0.6rem 1rem",
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+              fontWeight: 600
+            }}
+          >
+            Iniciar sesión
+          </button>
         </div>
       </div>
     );
@@ -700,7 +715,7 @@ export default function MultiplayerGame() {
                   setLightbox(item.photo);
                 }}
               >
-                <img src={item.photo} alt={item.species} />
+                <img src={item.photo} />
               </div>
             ))}
           </div>

@@ -156,7 +156,7 @@ async function loadObservation() {
 
       // 2️⃣ Pedimos observaciones dentro de esa región
       const randomPage = Math.floor(Math.random() * 200);
-      const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3`;
+      const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
 
       const randomRes = await fetch(randomUrl);
       if (randomRes.status === 429) {
@@ -180,7 +180,7 @@ async function loadObservation() {
       const locationName = generateLocationName(centerLat, centerLng);
 
       // 4️⃣ Buscamos cluster cercano (50 km)
-      const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3`;
+      const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3&captive=false`;
 
       const clusterRes = await fetch(clusterUrl);
       if (clusterRes.status === 429) {
@@ -224,6 +224,7 @@ async function loadObservation() {
           lat: r.geojson.coordinates[1],
           lon: r.geojson.coordinates[0],
           species: r.taxon?.preferred_common_name || r.taxon?.name,
+          taxon_id: r.taxon?.id,
           hotspot: locationName
         }));
 
@@ -382,7 +383,41 @@ async function loadObservation() {
                   setLightbox(item.photo);
                 }}
               >
-                <img src={item.photo} alt={item.species} />
+                <img src={item.photo} />
+                {confirmed && (
+                  <div 
+                    style={{
+                      position: "absolute",
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      background: "rgba(0, 0, 0, 0.8)",
+                      color: "#fff",
+                      padding: "4px 6px",
+                      fontSize: "11px",
+                      fontWeight: "600",
+                      textAlign: "center",
+                      borderRadius: "0 0 8px 8px",
+                      backdropFilter: "blur(4px)",
+                      cursor: "pointer",
+                      transition: "background-color 0.2s ease"
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation(); // Evitar que se abra el lightbox
+                      // Usar el taxon_id de la observación para mostrar el mapa de distribución de la especie
+                      const taxonId = item.taxon_id || '3'; // Fallback a aves si no hay taxon_id
+                      window.open(`https://www.inaturalist.org/observations?subview=map&taxon_id=${taxonId}&view=map`, '_blank');
+                    }}
+                    onMouseEnter={(e) => {
+                      e.target.style.backgroundColor = "rgba(0, 0, 0, 0.9)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.target.style.backgroundColor = "rgba(0, 0, 0, 0.8)";
+                    }}
+                  >
+                    {item.species}
+                  </div>
+                )}
               </div>
             ))}
           </div>

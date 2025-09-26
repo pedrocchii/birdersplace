@@ -101,7 +101,22 @@ export default function RoomLobby() {
     return (
       <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 480, textAlign: "center" }}>
-          Inicia sesión para crear o unirte a una sala.
+          <h2 style={{ marginTop: 0 }}>Salas privadas</h2>
+          <p style={{ opacity: 0.85, marginBottom: 20 }}>Inicia sesión para crear o unirte a una sala.</p>
+          <button
+            onClick={() => window.location.href = "?view=login"}
+            style={{
+              padding: "0.6rem 1rem",
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+              fontWeight: 600
+            }}
+          >
+            Iniciar sesión
+          </button>
         </div>
       </div>
     );

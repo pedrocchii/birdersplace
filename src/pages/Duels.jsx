@@ -123,7 +123,7 @@ export default function Duels() {
         const region = selectWeightedRegion(regionRandom);
         const [minLng, minLat, maxLng, maxLat] = region.bbox;
         const randomPage = Math.floor(seededRandom(seed + "_page") * 200);
-        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3`;
+        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
         
         // Headers mínimos para evitar detección como bot
         const randomRes = await fetch(randomUrl, {
@@ -160,7 +160,7 @@ export default function Duels() {
         const centerLat = base.geojson.coordinates[1];
         const centerLng = base.geojson.coordinates[0];
 
-        const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3`;
+        const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3&captive=false`;
 
         const clusterRes = await fetch(clusterUrl, {
           method: 'GET',
@@ -276,7 +276,7 @@ export default function Duels() {
         const region = REGIONS[Math.floor(Math.random() * REGIONS.length)];
         const [minLng, minLat, maxLng, maxLat] = region.bbox;
         const randomPage = Math.floor(Math.random() * 200);
-        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3`;
+        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
 
         const randomRes = await fetch(randomUrl);
         if (randomRes.status === 429) { 
@@ -768,7 +768,24 @@ export default function Duels() {
       <h1 style={{ fontSize: "24px", fontWeight: "bold" }}>Birders Place - Duels</h1>
       
       {!user && (
-        <div style={{ padding: "2rem", color: "#fff" }}>Inicia sesión para jugar.</div>
+        <div style={{ padding: "2rem", color: "#fff", textAlign: "center" }}>
+          <h2 style={{ marginTop: 0 }}>Duelos 1v1</h2>
+          <p style={{ opacity: 0.85, marginBottom: 20 }}>Inicia sesión para jugar.</p>
+          <button
+            onClick={() => window.location.href = "?view=login"}
+            style={{
+              padding: "0.6rem 1rem",
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+              fontWeight: 600
+            }}
+          >
+            Iniciar sesión
+          </button>
+        </div>
       )}
       
       {user && status === "idle" && (
@@ -1071,7 +1088,7 @@ export default function Duels() {
                     setLightbox(item.photo);
                   }}
                 >
-                  <img src={item.photo} alt={item.species} />
+                  <img src={item.photo} />
                 </div>
               ))}
             </div>
