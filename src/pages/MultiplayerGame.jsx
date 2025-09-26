@@ -288,26 +288,28 @@ export default function MultiplayerGame() {
 
   function ResultsMap() {
     const map = useMap();
+    const hasCenteredRef = useRef(false);
+    
     useEffect(() => {
       if (!roundResults || !roundResults.observation) return;
       
-      const { observation, guesses } = roundResults;
-      const positions = [
-        [observation.lat, observation.lon],
-        ...Object.values(guesses).map(g => [g.guess.lat, g.guess.lng])
-      ];
-      
-      if (positions.length > 1) {
-        const bounds = L.latLngBounds(positions);
-        // Ajustar el padding y zoom para mejor visualización
-        map.flyToBounds(bounds, { 
-          padding: [80, 80], 
-          maxZoom: 6, 
-          duration: 1.2,
-          animate: true
-        });
+      // Solo centrar una vez cuando se muestran los resultados
+      if (!hasCenteredRef.current) {
+        const realLocation = [roundResults.observation.lat, roundResults.observation.lon];
+        
+        // Centrar sin zoom (mantener zoom actual) y sin animación
+        map.setView(realLocation, map.getZoom(), { animate: false });
+        
+        hasCenteredRef.current = true;
       }
-    }, [roundResults, map]);
+      
+    }, [roundResults]); // Removido 'map' de las dependencias
+    
+    // Resetear el flag cuando cambien los resultados
+    useEffect(() => {
+      hasCenteredRef.current = false;
+    }, [roundResults]);
+    
     return null;
   }
 
@@ -368,9 +370,12 @@ export default function MultiplayerGame() {
         const gameData = { id: doc.id, ...doc.data() };
         setGame(gameData);
         
-        if (gameData.state === "finished") {
-          setStatus("finished");
-          setWinner(gameData.winner);
+        // NO cambiar inmediatamente a finished cuando el juego termina en Firestore
+        // Esto permite mostrar primero los resultados de la última ronda
+        if (gameData.state === "finished" && status !== "finished") {
+          // Solo cambiar a finished si ya hemos mostrado los resultados de la última ronda
+          // o si es el host y debe finalizar el juego
+          console.log("🎯 Game finished in Firestore, but waiting to show last round results first");
         }
         
         // Cargar datos de la ronda actual
@@ -448,20 +453,60 @@ export default function MultiplayerGame() {
     return () => off();
   }, [gameId, user]);
 
+  // Ref para mantener el intervalo del countdown
+  const countdownIntervalRef = useRef(null);
+
+  // Limpiar intervalo cuando el componente se desmonte o cambie el estado
+  useEffect(() => {
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+    };
+  }, []);
+
   // Auto-avanzar a la siguiente ronda después de 10 segundos (como en duels)
   useEffect(() => {
     if (showResults && roundResults) {
+      // Limpiar intervalo anterior si existe
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+      
       setCountdown(10);
       
-      const countdownInterval = setInterval(() => {
+      countdownIntervalRef.current = setInterval(() => {
         setCountdown(prev => {
           if (prev <= 1) {
-            clearInterval(countdownInterval);
+            if (countdownIntervalRef.current) {
+              clearInterval(countdownIntervalRef.current);
+              countdownIntervalRef.current = null;
+            }
             setShowResults(false);
             setRoundResults(null);
             
-            // Si el juego ha terminado, no resetear el estado del juego
-            if (status !== "finished") {
+            // Verificar si es la última ronda para mostrar resultados finales
+            const maxRounds = game?.maxRounds || 5;
+            const currentRound = roundResults?.round || 0;
+            
+            if (currentRound >= 5 || currentRound >= maxRounds) {
+              // Es la última ronda, cambiar a finished inmediatamente
+              console.log("🏁 Last round completed, transitioning to finished state");
+              setStatus("finished");
+              // Calcular ganador
+              if (game?.players) {
+                const winner = Object.entries(game.players)
+                  .reduce((prev, [uid, player]) => 
+                    (player.totalScore || 0) > (prev.totalScore || 0) 
+                      ? { uid, ...player } 
+                      : prev
+                  , { totalScore: 0 });
+                setWinner(winner.uid);
+                console.log("🏆 Winner calculated:", winner.uid, "with score:", winner.totalScore);
+              }
+            } else if (status !== "finished") {
+              // No es la última ronda, continuar normalmente
               setGuess(null);
               setDistance(null);
               setConfirmed(false);
@@ -474,9 +519,14 @@ export default function MultiplayerGame() {
         });
       }, 1000);
 
-      return () => clearInterval(countdownInterval);
+      return () => {
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
+        }
+      };
     }
-  }, [showResults, roundResults, status]);
+  }, [showResults, roundResults]); // Removido status y game de las dependencias
 
   // Handlers de la sala
   async function handleCreate() {
@@ -873,10 +923,18 @@ export default function MultiplayerGame() {
                   
                   {/* Ubicación real */}
                   <Marker position={[roundResults.observation.lat, roundResults.observation.lon]} icon={redMarkerIcon}>
-                    <Tooltip permanent direction="top" offset={[0, -4]} className="distance-tooltip">
-                      <div style={{ textAlign: "center" }}>
-                        <div style={{ fontWeight: "bold", color: "#dc2626" }}>📍 UBICACIÓN REAL</div>
-                      </div>
+                    <Tooltip permanent direction="top" offset={[-20, -25]} className="distance-tooltip" style={{ 
+                      background: "transparent", 
+                      border: "none", 
+                      boxShadow: "none",
+                      color: "#dc2626",
+                      fontWeight: "bold",
+                      fontSize: "14px",
+                      textAlign: "center",
+                      width: "40px",
+                      marginLeft: "-20px"
+                    }}>
+                      📍 UBICACIÓN REAL
                     </Tooltip>
                   </Marker>
                   
@@ -889,15 +947,18 @@ export default function MultiplayerGame() {
                     
                     return (
                       <Marker key={uid} position={[guess.guess.lat, guess.guess.lng]}>
-                        <Tooltip permanent direction="top" offset={[0, -4]} className="distance-tooltip">
-                          <div style={{ textAlign: "center" }}>
-                            <div style={{ fontWeight: "bold", color: color }}>
-                              {isCurrentPlayer ? "TÚ" : (player?.nickname || "Jugador")}
-                            </div>
-                            <div style={{ fontSize: "12px" }}>
-                              {formatDistance(guess.dist)} de distancia
-                            </div>
-                          </div>
+                        <Tooltip permanent direction="top" offset={[-20, -25]} className="distance-tooltip" style={{ 
+                          background: "transparent", 
+                          border: "none", 
+                          boxShadow: "none",
+                          color: color,
+                          fontWeight: "bold",
+                          fontSize: "14px",
+                          textAlign: "center",
+                          width: "40px",
+                          marginLeft: "-20px"
+                        }}>
+                          {isCurrentPlayer ? "TÚ" : (player?.nickname || "Jugador")}
                         </Tooltip>
                       </Marker>
                     );
@@ -961,17 +1022,73 @@ export default function MultiplayerGame() {
               
               {/* Contador de tiempo */}
               <div style={{ textAlign: "center", color: "#9ca3af" }}>
-                <div style={{ fontSize: "18px", marginBottom: "8px" }}>
-                  {status === "finished" ? "Mostrando resultados finales..." : "Siguiente ronda en:"}
-                </div>
-                <div style={{ 
-                  fontSize: "48px", 
-                  fontWeight: "bold", 
-                  color: countdown <= 3 ? "#ef4444" : "#f1c40f",
-                  textShadow: "0 0 10px rgba(241, 196, 15, 0.5)"
-                }}>
-                  {countdown}
-                </div>
+                {(() => {
+                  const maxRounds = game?.maxRounds || 5;
+                  const currentRound = roundResults?.round || 0;
+                  // Detectar si es la última ronda: si currentRound es 5 o si no hay más rondas en el juego
+                  const isLastRound = currentRound >= 5 || currentRound >= maxRounds;
+                  
+                  console.log("🔍 Round detection:", { 
+                    maxRounds, 
+                    currentRound, 
+                    isLastRound, 
+                    status,
+                    gameMaxRounds: game?.maxRounds 
+                  });
+                  
+                  return (
+                    <>
+                      <div style={{ fontSize: "18px", marginBottom: "8px" }}>
+                        {status === "finished" ? "Mostrando resultados finales..." : 
+                         isLastRound ? "Ver resultados finales en:" : "Siguiente ronda en:"}
+                      </div>
+                      <div style={{ 
+                        fontSize: "48px", 
+                        fontWeight: "bold", 
+                        color: countdown <= 3 ? "#ef4444" : "#f1c40f",
+                        textShadow: "0 0 10px rgba(241, 196, 15, 0.5)"
+                      }}>
+                        {countdown}
+                      </div>
+                      
+                      {/* Botón para ir directamente a resultados finales si es la última ronda */}
+                      {isLastRound && status !== "finished" && (
+                        <button
+                          onClick={() => {
+                            setShowResults(false);
+                            setRoundResults(null);
+                            setStatus("finished");
+                            // Calcular ganador
+                            if (game?.players) {
+                              const winner = Object.entries(game.players)
+                                .reduce((prev, [uid, player]) => 
+                                  (player.totalScore || 0) > (prev.totalScore || 0) 
+                                    ? { uid, ...player } 
+                                    : prev
+                                , { totalScore: 0 });
+                              setWinner(winner.uid);
+                            }
+                          }}
+                          style={{
+                            marginTop: "20px",
+                            padding: "12px 24px",
+                            fontSize: "16px",
+                            fontWeight: "bold",
+                            color: "#fff",
+                            background: "linear-gradient(135deg, #f39c12 0%, #e67e22 100%)",
+                            border: "none",
+                            borderRadius: "8px",
+                            cursor: "pointer",
+                            transition: "all 0.3s ease",
+                            boxShadow: "0 4px 8px rgba(243, 156, 18, 0.3)"
+                          }}
+                        >
+                          🏆 Ver resultados finales ahora
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </div>

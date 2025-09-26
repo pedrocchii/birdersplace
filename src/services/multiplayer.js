@@ -54,66 +54,116 @@ export async function tryMatchmake() {
 
   console.log("🔍 Intentando matchmaking para usuario:", user.uid);
 
-  // Consulta simplificada sin orderBy para evitar necesidad de índice
-  const q = query(collection(db, "duel_queue"), where("status", "==", "waiting"));
-  const snap = await getDocs(q);
-  const candidates = snap.docs
-    .map(doc => ({ id: doc.id, ...doc.data() }))
-    .filter(d => d.uid !== user.uid)
-    .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
-  
-  console.log("👥 Candidatos encontrados:", candidates.length);
-  
-  const candidate = candidates[0]; // Tomar el más antiguo
-  if (!candidate) {
-    console.log("❌ No hay candidatos disponibles");
-    return null;
-  }
-
-  console.log("🎯 Candidato seleccionado:", candidate.uid);
-
-  const opponent = candidate;
-
-  // Crear un match real en duel_matches usando transacción para evitar duplicados
+  // Usar transacción para evitar condiciones de carrera
   try {
-    const matchRef = doc(collection(db, "duel_matches"));
-    const matchId = matchRef.id;
-    
-    console.log("✅ Creando match real en Firestore:", matchId);
-    
-    // Obtener el nickname del usuario actual desde su perfil
-    const userProfileRef = doc(db, "users", user.uid);
-    const userProfileSnap = await getDoc(userProfileRef);
-    const userNickname = userProfileSnap.exists() ? userProfileSnap.data().nickname : null;
-    
-    // Crear el documento del match primero
-    await setDoc(matchRef, {
-      createdAt: serverTimestamp(),
-      state: "playing",
-      round: 1,
-      hostUid: user.uid, // El primer usuario es el host
-      players: {
-        [user.uid]: { hp: 6000, nickname: userNickname },
-        [opponent.uid]: { hp: 6000, nickname: opponent.nickname || "Jugador" },
-      },
-      rounds: {},
-      guesses: {},
+    const result = await runTransaction(db, async (transaction) => {
+      // Consulta simplificada sin orderBy para evitar necesidad de índice
+      const q = query(collection(db, "duel_queue"), where("status", "==", "waiting"));
+      const snap = await getDocs(q);
+      const candidates = snap.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter(d => d.uid !== user.uid)
+        .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+      
+      console.log("👥 Candidatos encontrados:", candidates.length);
+      
+      const candidate = candidates[0]; // Tomar el más antiguo
+      if (!candidate) {
+        console.log("❌ No hay candidatos disponibles");
+        return null;
+      }
+
+      console.log("🎯 Candidato seleccionado:", candidate.uid);
+
+      const opponent = candidate;
+
+      // Verificar que el oponente aún esté en waiting (evitar doble matchmaking)
+      const opponentRef = doc(db, "duel_queue", opponent.uid);
+      const opponentSnap = await transaction.get(opponentRef);
+      
+      if (!opponentSnap.exists() || opponentSnap.data().status !== "waiting") {
+        console.log("❌ Oponente ya no está disponible");
+        return null;
+      }
+
+      // Verificar que nosotros aún estemos en waiting
+      const meRef = doc(db, "duel_queue", user.uid);
+      const meSnap = await transaction.get(meRef);
+      
+      if (!meSnap.exists() || meSnap.data().status !== "waiting") {
+        console.log("❌ Ya no estamos en waiting");
+        return null;
+      }
+
+      // Crear el match
+      const matchRef = doc(collection(db, "duel_matches"));
+      const matchId = matchRef.id;
+      
+      console.log("✅ Creando match real en Firestore:", matchId);
+      
+      // Obtener el nickname del usuario actual desde su perfil
+      const userProfileRef = doc(db, "users", user.uid);
+      const userProfileSnap = await getDoc(userProfileRef);
+      const userNickname = userProfileSnap.exists() ? userProfileSnap.data().nickname : null;
+      
+      // Crear el documento del match
+      transaction.set(matchRef, {
+        createdAt: serverTimestamp(),
+        state: "playing",
+        round: 1,
+        hostUid: user.uid, // El primer usuario es el host
+        players: {
+          [user.uid]: { hp: 6000, nickname: userNickname },
+          [opponent.uid]: { hp: 6000, nickname: opponent.nickname || "Jugador" },
+        },
+        rounds: {},
+        guesses: {},
+      });
+
+      // Solo actualizar nuestro documento de cola (no podemos actualizar el del oponente por permisos)
+      transaction.update(meRef, { 
+        status: "matched", 
+        matchId: matchId,
+        opponentUid: opponent.uid,
+        opponentNickname: opponent.nickname || null
+      });
+
+      return matchId;
     });
 
-    // Actualizar solo nuestro documento de cola
-    const meRef = doc(db, "duel_queue", user.uid);
-    await updateDoc(meRef, { 
-      status: "matched", 
-      matchId: matchId,
-      opponentUid: opponent.uid,
-      opponentNickname: opponent.nickname || null
-    });
-
-    console.log("✅ Match creado exitosamente en Firestore:", matchId);
-    return matchId; // Retornar el ID real del match
+    if (result) {
+      console.log("✅ Match creado exitosamente en Firestore:", result);
+    }
+    
+    return result;
   } catch (error) {
     console.log("❌ Error en matchmaking:", error);
     return null;
+  }
+}
+
+// Función para que el oponente se una al match cuando detecte que fue emparejado
+export async function joinMatchAsOpponent(matchId, opponentUid, opponentNickname) {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No auth");
+
+  console.log("🤝 Uniéndose al match como oponente:", matchId);
+
+  try {
+    // Actualizar nuestro documento de cola
+    const meRef = doc(db, "duel_queue", user.uid);
+    await updateDoc(meRef, {
+      status: "matched",
+      matchId: matchId,
+      opponentUid: opponentUid,
+      opponentNickname: opponentNickname
+    });
+
+    console.log("✅ Oponente unido al match exitosamente");
+    return true;
+  } catch (error) {
+    console.log("❌ Error uniéndose al match:", error);
+    return false;
   }
 }
 
@@ -194,13 +244,34 @@ export function listenForOpponentMatch(cb) {
     where("status", "==", "matched")
   );
   
-  return onSnapshot(q, (snapshot) => {
+  return onSnapshot(q, async (snapshot) => {
     if (!snapshot.empty) {
       const matchData = snapshot.docs[0].data();
       console.log("🎯 Oponente fue emparejado con nosotros:", matchData);
       
-      // Solo notificar, no actualizar el documento para evitar crear un nuevo match
-      cb(matchData);
+      // Verificar que nuestro documento esté en estado "waiting" antes de procesar
+      const meRef = doc(db, "duel_queue", user.uid);
+      const meSnap = await getDoc(meRef);
+      
+      if (!meSnap.exists() || meSnap.data().status !== "waiting") {
+        console.log("❌ No estamos en waiting, ignorando match de oponente");
+        return;
+      }
+      
+      // Actualizar nuestro documento para unirnos al match
+      await joinMatchAsOpponent(
+        matchData.matchId, 
+        matchData.uid, 
+        matchData.nickname
+      );
+      
+      // Notificar con los datos actualizados
+      cb({
+        ...matchData,
+        matchId: matchData.matchId,
+        opponentUid: matchData.uid,
+        opponentNickname: matchData.nickname
+      });
     }
   });
 }

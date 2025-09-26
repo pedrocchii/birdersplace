@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../firebaseClient";
-import { doc, getDoc, collection, query, where, orderBy, limit, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, orderBy, limit, onSnapshot, deleteDoc } from "firebase/firestore";
 import { enqueueForDuel, tryMatchmake, cancelQueue, listenQueueDoc, listenMatchmakingQueue, listenForOpponentMatch, listenMatch, setRoundDataIfAbsent, submitGuessAndApplyDamage, updateHeartbeat } from "../services/multiplayer";
 import { MapContainer, TileLayer, Marker, Polyline, useMapEvents, useMap, Tooltip } from "react-leaflet";
 import L from "leaflet";
@@ -66,21 +66,6 @@ export default function Duels() {
     { name: "Oceania", bbox: [110, -50, 180, 0], weight: 0.5 }, // Reducido a la mitad
   ];
 
-  // Función para seleccionar región basada en pesos
-  function selectWeightedRegion(seededRandom) {
-    const totalWeight = REGIONS.reduce((sum, region) => sum + region.weight, 0);
-    let random = seededRandom * totalWeight;
-    
-    for (const region of REGIONS) {
-      random -= region.weight;
-      if (random <= 0) {
-        return region;
-      }
-    }
-    
-    // Fallback (no debería llegar aquí)
-    return REGIONS[REGIONS.length - 1];
-  }
 
 
   async function loadObservationForMatch(matchData, hostUid) {
@@ -93,20 +78,8 @@ export default function Duels() {
 
     console.log("Host loading observation for round:", matchData.round);
 
-    // Usar un seed determinístico basado en matchId y ronda para asegurar consistencia
-    const seed = `${matchData.id || matchData.matchId}_${matchData.round}`;
-    console.log("🎲 Using deterministic seed:", seed);
-    
-    // Función para generar números pseudoaleatorios determinísticos
-    function seededRandom(seed) {
-      let hash = 0;
-      for (let i = 0; i < seed.length; i++) {
-        const char = seed.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash; // Convert to 32bit integer
-      }
-      return Math.abs(hash) / 2147483647; // Normalize to 0-1
-    }
+    // Usar sistema simple como MultiplayerGame.jsx
+    console.log("🎲 Using simple random selection");
 
     const maxAttempts = 15;
     let attempts = 0;
@@ -118,32 +91,17 @@ export default function Duels() {
       attempts++;
       console.log(`Attempt ${attempts}/${maxAttempts}`);
       try {
-        // Usar seed determinístico para seleccionar región con pesos
-        const regionRandom = seededRandom(seed + "_region");
-        const region = selectWeightedRegion(regionRandom);
+        // Usar selección simple de región como en MultiplayerGame.jsx
+        const region = REGIONS[Math.floor(Math.random() * REGIONS.length)];
         const [minLng, minLat, maxLng, maxLat] = region.bbox;
-        const randomPage = Math.floor(seededRandom(seed + "_page") * 200);
+        const randomPage = Math.floor(Math.random() * 100);
         const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
         
-        // Headers mínimos para evitar detección como bot
-        const randomRes = await fetch(randomUrl, {
-          method: 'GET',
-          mode: 'cors',
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          }
-        });
+        const randomRes = await fetch(randomUrl);
         
-        if (randomRes.status === 429) { 
-          console.log("💤 Límite de requests, esperando 2000ms...");
-          await new Promise(r => setTimeout(r, 2000));
-          continue; 
-        }
-        
-        if (randomRes.status === 403) {
-          console.log("🚫 403 Forbidden, esperando 3000ms antes del siguiente intento...");
-          await new Promise(r => setTimeout(r, 3000));
+        if (randomRes.status === 429) {
+          console.log("💤 Límite de requests, esperando 500ms...");
+          await new Promise(r => setTimeout(r, 500));
           continue;
         }
 
@@ -154,32 +112,18 @@ export default function Duels() {
           console.log("No valid observations found");
           continue;
         }
-        // Usar seed determinístico para seleccionar observación base
-        const baseIndex = Math.floor(seededRandom(seed + "_base") * valid.length);
-        const base = valid[baseIndex];
+        // Usar selección simple como en MultiplayerGame.jsx
+        const base = valid[Math.floor(Math.random() * valid.length)];
         const centerLat = base.geojson.coordinates[1];
         const centerLng = base.geojson.coordinates[0];
 
         const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3&captive=false`;
 
-        const clusterRes = await fetch(clusterUrl, {
-          method: 'GET',
-          mode: 'cors',
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          }
-        });
+        const clusterRes = await fetch(clusterUrl);
         
-        if (clusterRes.status === 429) { 
-          console.log("💤 Límite de requests cluster, esperando 2000ms...");
-          await new Promise(r => setTimeout(r, 2000));
-          continue; 
-        }
-        
-        if (clusterRes.status === 403) {
-          console.log("🚫 Cluster 403 Forbidden, esperando 3000ms antes del siguiente intento...");
-          await new Promise(r => setTimeout(r, 3000));
+        if (clusterRes.status === 429) {
+          console.log("💤 Límite de requests cluster, esperando 500ms...");
+          await new Promise(r => setTimeout(r, 500));
           continue;
         }
 
@@ -191,34 +135,9 @@ export default function Duels() {
         );
 
         if (clusterObservations.length >= 8) {
-          // Filtrar para obtener observaciones con especies únicas
-          const uniqueSpecies = new Map();
-          clusterObservations.forEach(obs => {
-            const speciesName = obs.taxon?.preferred_common_name || obs.taxon?.name || 'Unknown';
-            if (!uniqueSpecies.has(speciesName)) {
-              uniqueSpecies.set(speciesName, obs);
-            }
-          });
-          
-          // Si tenemos al menos 8 especies únicas, usarlas
-          let selected;
-          if (uniqueSpecies.size >= 8) {
-            const uniqueObservations = Array.from(uniqueSpecies.values());
-            const shuffled = [...uniqueObservations].sort((a, b) => {
-              const hashA = seededRandom(seed + "_shuffle_" + a.id);
-              const hashB = seededRandom(seed + "_shuffle_" + b.id);
-              return hashA - hashB;
-            });
-            selected = shuffled.slice(0, 8);
-          } else {
-            // Si no hay suficientes especies únicas, usar el método original
-            const shuffled = [...clusterObservations].sort((a, b) => {
-              const hashA = seededRandom(seed + "_shuffle_" + a.id);
-              const hashB = seededRandom(seed + "_shuffle_" + b.id);
-              return hashA - hashB;
-            });
-            selected = shuffled.slice(0, 8);
-          }
+          // Usar selección simple como en MultiplayerGame.jsx
+          const shuffled = [...clusterObservations].sort(() => Math.random() - 0.5);
+          const selected = shuffled.slice(0, 8);
         const items = selected.map(r => ({
           id: r.id,
           photo: r.photos[0].url.replace("square", "large"),
@@ -239,10 +158,10 @@ export default function Duels() {
         return;
         }
 
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 200));
       } catch (error) {
         console.error(`Error en intento ${attempts}:`, error);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 200));
       }
     }
     console.error("❌ No se encontró un cluster válido tras varios intentos");
@@ -366,26 +285,28 @@ export default function Duels() {
 
   function ResultsMap() {
     const map = useMap();
+    const hasCenteredRef = useRef(false);
+    
     useEffect(() => {
       if (!roundResults || !roundResults.observation) return;
       
-      const { observation, guesses } = roundResults;
-      const positions = [
-        [observation.lat, observation.lon],
-        ...Object.values(guesses).map(g => [g.guess.lat, g.guess.lng])
-      ];
-      
-      if (positions.length > 1) {
-        const bounds = L.latLngBounds(positions);
-        // Ajustar el padding y zoom para mejor visualización
-        map.flyToBounds(bounds, { 
-          padding: [80, 80], 
-          maxZoom: 6, 
-          duration: 1.2,
-          animate: true
-        });
+      // Solo centrar una vez cuando se muestran los resultados
+      if (!hasCenteredRef.current) {
+        const realLocation = [roundResults.observation.lat, roundResults.observation.lon];
+        
+        // Centrar sin zoom (mantener zoom actual) y sin animación
+        map.setView(realLocation, map.getZoom(), { animate: false });
+        
+        hasCenteredRef.current = true;
       }
-    }, [roundResults, map]);
+      
+    }, [roundResults]); // Removido 'map' de las dependencias
+    
+    // Resetear el flag cuando cambien los resultados
+    useEffect(() => {
+      hasCenteredRef.current = false;
+    }, [roundResults]);
+    
     return null;
   }
 
@@ -483,7 +404,7 @@ export default function Duels() {
         console.log("✅ Usuario encontrado en cola, posición:", queueData.myPosition);
         setStatus("waiting");
         
-        // Si hay 2+ jugadores, intentar matchmaking
+        // Si hay 2+ jugadores, intentar matchmaking (la transacción evitará duplicados)
         if (queueData.waitingPlayers >= 2) {
           console.log("🎯 Hay suficientes jugadores, intentando matchmaking...");
           tryMatchmake().then((matchId) => {
@@ -493,7 +414,7 @@ export default function Duels() {
               setStatus("matched");
               // NO cargar observaciones aquí, esperar a que el host las cargue en listenMatch
             } else {
-              console.log("❌ No se pudo crear el match (matchId es null)");
+              console.log("❌ No se pudo crear el match (matchId es null) - probablemente ya fue creado por otro usuario");
             }
           }).catch((error) => {
             console.log("❌ Error en matchmaking:", error);
@@ -522,22 +443,19 @@ export default function Duels() {
   useEffect(() => {
     if (!user) return;
     
-    console.log("⚠️ listenQueueDoc deshabilitado temporalmente para evitar matches fantasma");
-    
-    // const off = listenQueueDoc((q) => {
-    //   if (!q) return;
-    //   console.log("📋 Estado de cola del usuario:", q);
+    const off = listenQueueDoc((q) => {
+      if (!q) return;
+      console.log("📋 Estado de cola del usuario:", q);
       
-    //   if (q.status === "matched" && q.matchId) {
-    //     console.log("🎯 Match encontrado para usuario:", q.matchId);
-    //     setMatchId(q.matchId);
-    //     setStatus("matched");
-    //     // Cargar la primera ronda inmediatamente
-    //     loadObservation();
-    //   }
-    // });
+      if (q.status === "matched" && q.matchId) {
+        console.log("🎯 Match encontrado para usuario:", q.matchId);
+        setMatchId(q.matchId);
+        setStatus("matched");
+        // NO cargar observaciones aquí, esperar a que el host las cargue en listenMatch
+      }
+    });
     
-    // return () => off();
+    return () => off();
   }, [user]);
 
   // Escuchar si nuestro oponente fue emparejado con nosotros
@@ -593,7 +511,7 @@ export default function Duels() {
           console.log("Game finished, showing final round results for round", lastRound);
           setRoundResults({
             round: lastRound,
-            observation: lastRoundData.items?.[lastRoundData.index],
+            observation: lastRoundData.items?.[lastRoundData.index] || null,
             guesses: lastRoundData.guesses,
             damage: lastRoundData.damage,
             players: m.players // Usar los HP actualizados del match actual
@@ -639,7 +557,7 @@ export default function Duels() {
             console.log("Both players finished round, showing results for round", completedRound);
             setRoundResults({
               round: completedRound,
-              observation: completedRoundData.items?.[completedRoundData.index],
+              observation: completedRoundData.items?.[completedRoundData.index] || null,
               guesses: completedRoundData.guesses,
               damage: completedRoundData.damage,
               players: m.players // Usar los HP actualizados del match actual
@@ -728,12 +646,8 @@ export default function Duels() {
         console.log("⏳ Usuario agregado a cola, esperando matchmaking...");
         // Pequeño delay para asegurar que el listener detecte el cambio
         setTimeout(() => {
-          console.log("🔍 Estado actual después de delay:", status);
-          if (status === "waiting") {
-            console.log("✅ Usuario en cola, esperando matchmaking...");
-          } else {
-            console.log("❌ Estado inesperado:", status);
-          }
+          // No verificar el estado aquí ya que puede haber cambiado por matchmaking
+          console.log("⏳ Usuario agregado a cola, esperando matchmaking...");
         }, 100);
       }
     } catch (error) {
@@ -921,13 +835,23 @@ export default function Duels() {
                 <ResultsMap />
                 
                 {/* Ubicación real */}
-                <Marker position={[roundResults.observation.lat, roundResults.observation.lon]} icon={redMarkerIcon}>
-                  <Tooltip permanent direction="top" offset={[0, -4]} className="distance-tooltip">
-                    <div style={{ textAlign: "center" }}>
-                      <div style={{ fontWeight: "bold", color: "#dc2626" }}>📍 UBICACIÓN REAL</div>
-                    </div>
-                  </Tooltip>
-                </Marker>
+                {roundResults.observation && (
+                  <Marker position={[roundResults.observation.lat, roundResults.observation.lon]} icon={redMarkerIcon}>
+                    <Tooltip permanent direction="top" offset={[-20, -25]} className="distance-tooltip" style={{ 
+                      background: "transparent", 
+                      border: "none", 
+                      boxShadow: "none",
+                      color: "#dc2626",
+                      fontWeight: "bold",
+                      fontSize: "14px",
+                      textAlign: "center",
+                      width: "40px",
+                      marginLeft: "-20px"
+                    }}>
+                      📍 UBICACIÓN REAL
+                    </Tooltip>
+                  </Marker>
+                )}
                 
                 {/* Respuestas de los jugadores */}
                 {Object.entries(roundResults.guesses).map(([uid, guess], index) => {
@@ -938,15 +862,18 @@ export default function Duels() {
                   
                   return (
                     <Marker key={uid} position={[guess.guess.lat, guess.guess.lng]}>
-                      <Tooltip permanent direction="top" offset={[0, -4]} className="distance-tooltip">
-                        <div style={{ textAlign: "center" }}>
-                          <div style={{ fontWeight: "bold", color: color }}>
-                            {isCurrentPlayer ? "TÚ" : (player?.nickname || "Rival")}
-                          </div>
-                          <div style={{ fontSize: "12px" }}>
-                            {formatDistance(guess.distance)} de distancia
-                          </div>
-                        </div>
+                      <Tooltip permanent direction="top" offset={[-20, -25]} className="distance-tooltip" style={{ 
+                        background: "transparent", 
+                        border: "none", 
+                        boxShadow: "none",
+                        color: color,
+                        fontWeight: "bold",
+                        fontSize: "14px",
+                        textAlign: "center",
+                        width: "40px",
+                        marginLeft: "-20px"
+                      }}>
+                        {isCurrentPlayer ? "TÚ" : (player?.nickname || "Rival")}
                       </Tooltip>
                     </Marker>
                   );
@@ -1252,10 +1179,19 @@ export default function Duels() {
              onClick={async () => {
                console.log("🔄 Reiniciando juego - limpiando todo el estado");
                
-               // Limpiar cola anterior
+               // Limpiar cola anterior completamente
                await cancelQueue().catch(error => {
                  console.log("⚠️ Error limpiando cola anterior:", error);
                });
+               
+               // También limpiar cualquier documento de cola que pueda quedar
+               try {
+                 const userRef = doc(db, "duel_queue", user.uid);
+                 await deleteDoc(userRef);
+                 console.log("✅ Documento de cola eliminado completamente");
+               } catch (error) {
+                 console.log("⚠️ Error eliminando documento de cola:", error);
+               }
                
                // Resetear todo el estado
               setStatus("idle");
@@ -1288,9 +1224,11 @@ export default function Duels() {
                  console.log("🏠 Volviendo a la sala privada");
                  window.location.href = "?view=rooms";
                } else {
-                 // Veníamos de matchmaking, ir al matchmaking
-                 console.log("🔍 Volviendo al matchmaking 1v1");
+                 // Veníamos de matchmaking, limpiar URL completamente y ir al matchmaking
+                 console.log("🔍 Volviendo al matchmaking 1v1 - limpiando URL");
                  window.location.href = "?view=duels";
+                 // Limpiar la URL para evitar que se mantenga el matchId anterior
+                 window.history.replaceState({}, document.title, "?view=duels");
                }
             }}
             style={{
