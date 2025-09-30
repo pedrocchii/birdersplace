@@ -333,7 +333,7 @@ export function listenMatch(matchId, cb) {
     if (matchData.state === "matched" && matchData.host) {
       const currentTime = new Date();
       const hostLastActivity = matchData.players?.[matchData.host]?.lastActivity?.toDate();
-      const DISCONNECT_TIMEOUT = 30000; // 30 seconds
+      const DISCONNECT_TIMEOUT = 90000; // 90 seconds
       
       if (hostLastActivity && (currentTime - hostLastActivity) > DISCONNECT_TIMEOUT) {
         console.log("🏠 Match appears abandoned - host disconnected for too long");
@@ -345,6 +345,48 @@ export function listenMatch(matchId, cb) {
     
     cb({ id: matchId, ...matchData });
   });
+}
+
+// Cleanup abandoned matches automatically
+export async function cleanupAbandonedMatches() {
+  try {
+    const matchesQuery = query(
+      collection(db, "duel_matches"),
+      where("state", "==", "playing")
+    );
+    
+    const matchesSnap = await getDocs(matchesQuery);
+    const currentTime = new Date();
+    const ABANDON_TIMEOUT = 300000; // 5 minutes
+    
+    for (const matchDoc of matchesSnap.docs) {
+      const matchData = matchDoc.data();
+      const players = matchData.players || {};
+      
+      // Check if any player has been disconnected for too long
+      let shouldCleanup = false;
+      for (const [playerId, playerData] of Object.entries(players)) {
+        const lastActivity = playerData.lastActivity?.toDate();
+        if (lastActivity && (currentTime - lastActivity) > ABANDON_TIMEOUT) {
+          shouldCleanup = true;
+          break;
+        }
+      }
+      
+      if (shouldCleanup) {
+        // Clean up abandoned match
+        await deleteDoc(matchDoc.ref);
+        console.log(`🧹 Cleaned abandoned match: ${matchDoc.id}`);
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error cleaning abandoned matches:", error);
+  }
+}
+
+// Start automatic cleanup every 5 minutes
+if (typeof window !== 'undefined') {
+  setInterval(cleanupAbandonedMatches, 300000); // 5 minutes
 }
 
 export async function submitRoundResult(matchId, uid, distanceKm) {

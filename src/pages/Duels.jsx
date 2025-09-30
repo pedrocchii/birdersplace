@@ -339,6 +339,9 @@ export default function Duels() {
   // Leaderboard state
   const [leaderboard, setLeaderboard] = useState([]);
   
+  // Opponent status state
+  const [opponentStatus, setOpponentStatus] = useState("Activo");
+  
   // Refs for tracking
   const [currentRoundDisplayed, setCurrentRoundDisplayed] = useState(0);
   const lastProcessedRoundRef = useRef(0);
@@ -560,7 +563,7 @@ export default function Duels() {
       
       const players = matchData.players || {};
       const currentTime = new Date();
-      const DISCONNECT_TIMEOUT = 30000; // 30 seconds (reduced from 93)
+      const DISCONNECT_TIMEOUT = 90000; // 90 seconds (reduced from 93)
       
       // Check each player's last activity
       for (const [playerId, playerData] of Object.entries(players)) {
@@ -657,6 +660,40 @@ export default function Duels() {
       console.error("❌ Error checking disconnected players:", error);
     }
   }, [matchId, match, status]);
+
+  // Handle player disconnection with atomic transaction
+  const handlePlayerDisconnection = useCallback(async (disconnectedPlayerId) => {
+    if (!matchId) return;
+    
+    try {
+      const mRef = doc(db, "duel_matches", matchId);
+      
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(mRef);
+        if (!snap.exists() || snap.data().state === "finished") return;
+        
+        const matchData = snap.data();
+        const remainingPlayerId = Object.keys(matchData.players)
+          .find(id => id !== disconnectedPlayerId);
+        
+        if (!remainingPlayerId) return;
+        
+        // End match due to disconnection
+        tx.update(mRef, {
+          state: "finished",
+          finishedAt: serverTimestamp(),
+          winner: remainingPlayerId,
+          disconnectionElimination: true,
+          eliminatedPlayer: disconnectedPlayerId,
+          statsProcessed: true
+        });
+      });
+      
+      console.log("✅ Match ended due to disconnection");
+    } catch (error) {
+      console.error("❌ Error handling disconnection:", error);
+    }
+  }, [matchId]);
 
   // Clean player state when match ends
   const cleanPlayerState = useCallback(async () => {
@@ -951,10 +988,21 @@ export default function Duels() {
       // CHECK IF MATCH IS FINISHED BEFORE JOINING
       try {
         const matchRef = doc(db, "duel_matches", matchData.matchId);
-        const matchSnap = await getDoc(matchRef);
+        
+        // Retry logic for race conditions
+        let matchSnap;
+        let retries = 3;
+        while (retries > 0) {
+          matchSnap = await getDoc(matchRef);
+          if (matchSnap.exists()) break;
+          
+          console.log(`⏳ Match not found, retrying... (${4-retries}/3)`);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+          retries--;
+        }
         
         if (!matchSnap.exists()) {
-          console.log("❌ Match doesn't exist, cleaning queue");
+          console.log("❌ Match doesn't exist after retries, cleaning queue");
           await cancelQueue();
           return;
         }
@@ -1291,6 +1339,29 @@ export default function Duels() {
     }
   }, [status, showResults, stopTimer]);
 
+  // Heartbeat system - send activity every 10 seconds
+  useEffect(() => {
+    if (status !== GAME_STATUS.MATCHED || !matchId || !user) return;
+    
+    const updateHeartbeat = async () => {
+      try {
+        const mRef = doc(db, "duel_matches", matchId);
+        await updateDoc(mRef, {
+          [`players.${user.uid}.lastActivity`]: serverTimestamp()
+        });
+        console.log("💓 Heartbeat sent");
+      } catch (error) {
+        console.error("❌ Error sending heartbeat:", error);
+      }
+    };
+    
+    // Send heartbeat immediately and then every 10 seconds
+    updateHeartbeat();
+    const heartbeatInterval = setInterval(updateHeartbeat, 10000);
+    
+    return () => clearInterval(heartbeatInterval);
+  }, [status, matchId, user]);
+
   // Check for disconnected players periodically
   useEffect(() => {
     if (status !== GAME_STATUS.MATCHED || !matchId) return;
@@ -1301,6 +1372,36 @@ export default function Duels() {
     
     return () => clearInterval(disconnectCheckInterval);
   }, [status, matchId, checkDisconnectedPlayers]);
+
+  // Monitor opponent status in real-time
+  useEffect(() => {
+    if (!matchId || !match || !user) return;
+    
+    const opponentId = Object.keys(match.players || {}).find(id => id !== user.uid);
+    if (!opponentId) return;
+    
+    const mRef = doc(db, "duel_matches", matchId);
+    
+    const unsubscribe = onSnapshot(mRef, (doc) => {
+      if (!doc.exists()) return;
+      
+      const matchData = doc.data();
+      const opponentData = matchData.players?.[opponentId];
+      
+      if (!opponentData) return;
+      
+      const lastActivity = opponentData.lastActivity?.toDate();
+      const currentTime = new Date();
+      const DISCONNECT_TIMEOUT = 90000; // 90 seconds
+      
+      const isDisconnected = lastActivity && 
+        (currentTime - lastActivity) > DISCONNECT_TIMEOUT;
+      
+      setOpponentStatus(isDisconnected ? "Desconectado" : "Activo");
+    });
+    
+    return () => unsubscribe();
+  }, [matchId, match, user]);
 
   // Load leaderboard on component mount
   useEffect(() => {
@@ -1841,6 +1942,39 @@ export default function Duels() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Opponent Status */}
+      {user && status === GAME_STATUS.MATCHED && match && !showResults && (
+        <div style={{ marginBottom: "1rem" }}>
+          {opponentStatus === "Desconectado" && (
+            <div style={{
+              background: "#ef4444",
+              color: "#fff",
+              padding: "8px 16px",
+              borderRadius: "8px",
+              textAlign: "center",
+              fontSize: "14px",
+              fontWeight: "bold"
+            }}>
+              ⚠️ Oponente desconectado - Partida terminará automáticamente
+            </div>
+          )}
+          
+          {opponentStatus === "Activo" && (
+            <div style={{
+              background: "#10b981",
+              color: "#fff",
+              padding: "8px 16px",
+              borderRadius: "8px",
+              textAlign: "center",
+              fontSize: "14px",
+              fontWeight: "bold"
+            }}>
+              ✅ Oponente conectado
+            </div>
+          )}
         </div>
       )}
 

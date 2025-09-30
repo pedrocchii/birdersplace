@@ -29,7 +29,8 @@ service cloud.firestore {
 
     // REGLAS PARA DUELS - SEGURAS PARA PRODUCCIÓN
     match /duel_queue/{uid} {
-      allow read, create, update: if isSignedIn() && request.auth.uid == uid; // Solo el propietario puede gestionar su cola
+      allow read: if isSignedIn(); // Cualquier usuario autenticado puede leer la cola (necesario para matchmaking)
+      allow create, update: if isSignedIn() && request.auth.uid == uid; // Solo el propietario puede gestionar su cola
       allow delete: if isSignedIn() && request.auth.uid == uid; // Solo el propietario puede eliminar su cola
     }
 
