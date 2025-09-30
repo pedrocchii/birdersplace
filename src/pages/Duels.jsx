@@ -560,7 +560,7 @@ export default function Duels() {
       
       const players = matchData.players || {};
       const currentTime = new Date();
-      const DISCONNECT_TIMEOUT = 93000; // 93 seconds
+      const DISCONNECT_TIMEOUT = 30000; // 30 seconds (reduced from 93)
       
       // Check each player's last activity
       for (const [playerId, playerData] of Object.entries(players)) {
@@ -569,6 +569,35 @@ export default function Duels() {
         const lastActivity = playerData.lastActivity?.toDate();
         if (lastActivity && (currentTime - lastActivity) > DISCONNECT_TIMEOUT) {
           console.log("🔍 Player appears disconnected:", playerId, "Last activity:", lastActivity);
+          
+          // If the disconnected player is the host and we're in a later round, end the match
+          const isHost = playerId === matchData.host;
+          const currentRound = matchData.round || 1;
+          
+          if (isHost && currentRound > 1) {
+            console.log("🏠 Host disconnected in round", currentRound, "- ending match");
+            
+            await runTransaction(db, async (tx) => {
+              const snap = await tx.get(mRef);
+              if (!snap.exists()) return;
+              
+              const data = snap.data();
+              if (data.state === GAME_STATUS.FINISHED) return;
+              
+              // Find the remaining player (not the disconnected host)
+              const remainingPlayerId = Object.keys(data.players).find(id => id !== playerId);
+              
+              tx.update(mRef, {
+                state: GAME_STATUS.FINISHED,
+                finishedAt: new Date(),
+                hostDisconnected: true,
+                winner: remainingPlayerId,
+                disconnectionElimination: true
+              });
+            });
+            
+            return; // Exit early since match is ended
+          }
           
           // Check if this player has already made a guess this round
           const round = matchData.round || 1;

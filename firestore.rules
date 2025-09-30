@@ -50,7 +50,7 @@ service cloud.firestore {
     // 🆕 REGLAS PARA EL SISTEMA DE LEADERBOARD Y COPAS
     match /user_stats/{uid} {
       allow read: if isSignedIn(); // Cualquier usuario autenticado puede leer las estadísticas
-      allow create, update: if isSignedIn() && request.auth.uid == uid; // Solo el propietario puede crear/actualizar sus estadísticas
+      allow create, update: if isSignedIn(); // Cualquier usuario autenticado puede crear/actualizar estadísticas (necesario para matchmaking)
       allow delete: if false; // No permitir eliminación
     }
   }

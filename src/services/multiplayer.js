@@ -321,7 +321,30 @@ export function listenQueueForMatchmaking(cb) {
 
 export function listenMatch(matchId, cb) {
   const mRef = doc(db, "duel_matches", matchId);
-  return onSnapshot(mRef, (s) => cb({ id: matchId, ...(s.data() || {}) }));
+  return onSnapshot(mRef, (s) => {
+    if (!s.exists()) {
+      cb(null);
+      return;
+    }
+    
+    const matchData = s.data();
+    
+    // Check if match is abandoned (host disconnected for too long)
+    if (matchData.state === "matched" && matchData.host) {
+      const currentTime = new Date();
+      const hostLastActivity = matchData.players?.[matchData.host]?.lastActivity?.toDate();
+      const DISCONNECT_TIMEOUT = 30000; // 30 seconds
+      
+      if (hostLastActivity && (currentTime - hostLastActivity) > DISCONNECT_TIMEOUT) {
+        console.log("🏠 Match appears abandoned - host disconnected for too long");
+        // Don't join abandoned matches
+        cb(null);
+        return;
+      }
+    }
+    
+    cb({ id: matchId, ...matchData });
+  });
 }
 
 export async function submitRoundResult(matchId, uid, distanceKm) {
