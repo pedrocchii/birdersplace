@@ -817,7 +817,7 @@ export default function MultiplayerGame() {
               cursor: "pointer",
             }}
           >
-            Verificar
+            Verify
           </button>
         )}
 
@@ -934,7 +934,7 @@ export default function MultiplayerGame() {
                       width: "40px",
                       marginLeft: "-20px"
                     }}>
-                      📍 UBICACIÓN REAL
+                      📍 REAL LOCATION
                     </Tooltip>
                   </Marker>
                   
@@ -1111,7 +1111,7 @@ export default function MultiplayerGame() {
     const finalRanking = game?.players ? Object.entries(game.players)
       .map(([uid, player]) => ({
         uid,
-        nickname: player.nickname || "Jugador",
+        nickname: player.nickname || "Player",
         totalScore: player.totalScore || 0
       }))
       .sort((a, b) => b.totalScore - a.totalScore) : [];
@@ -1191,7 +1191,7 @@ export default function MultiplayerGame() {
               color: "#1a1a2e",
               marginBottom: "5px"
             }}>
-              {game?.players?.[winner]?.nickname || "Jugador"}
+              {game?.players?.[winner]?.nickname || "Player"}
             </div>
             <div style={{ 
               fontSize: "18px", 

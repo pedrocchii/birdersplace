@@ -73,7 +73,7 @@ const updatePlayerCups = async (playerUid, playerNickname, isWin) => {
 // Constants
 const GAME_CONFIG = {
   INITIAL_HP: 6000,
-  ROUND_TIMER: 20, // seconds
+  ROUND_TIMER: 90, // seconds
   RESULTS_COUNTDOWN: 10, // seconds
   HEARTBEAT_INTERVAL: 10000, // milliseconds
   MAX_OBSERVATION_ATTEMPTS: 15,
@@ -373,7 +373,7 @@ export default function Duels() {
           .map((doc, index) => ({
             id: doc.id,
             rank: index + 1,
-            nickname: doc.data().nickname || "Jugador",
+            nickname: doc.data().nickname || "Player",
             cups: doc.data().duelCups || 0,
             wins: doc.data().duelWins || 0,
             losses: doc.data().duelLosses || 0
@@ -1650,7 +1650,7 @@ export default function Duels() {
                       width: "40px",
                       marginLeft: "-20px"
                     }}>
-                      📍 UBICACIÓN REAL
+                      📍 REAL LOCATION
                     </Tooltip>
                   </Marker>
                 )}
@@ -1882,7 +1882,7 @@ export default function Duels() {
                   <div style={{ fontWeight: 700, color: "#fff" }}>
                     {p.nickname || (uid === user.uid ? (nickname || "You") : "Opponent")}
                   </div>
-                  <div style={{ color: "#ecf0f1" }}>Puntos: {(p.hp ?? 6000).toLocaleString()}</div>
+                  <div style={{ color: "#ecf0f1" }}>Points: {(p.hp ?? 6000).toLocaleString()}</div>
                 </div>
               ))}
             </div>
@@ -1992,7 +1992,7 @@ export default function Duels() {
                 cursor: "pointer",
               }}
             >
-              Verificar
+              Verify
             </button>
           )}
 

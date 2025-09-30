@@ -822,7 +822,7 @@ function calculateMultiplayerRoundResults(guesses, players) {
   results.rankings = Object.entries(results.scores)
     .map(([uid, points]) => ({
       uid,
-      nickname: players[uid]?.nickname || "Jugador",
+      nickname: players[uid]?.nickname || "Player",
       points,
       distance: guesses[uid].dist
     }))

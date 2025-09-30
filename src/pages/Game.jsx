@@ -482,7 +482,7 @@ async function loadObservation() {
                 cursor: "pointer",
               }}
             >
-              Verificar
+              Verify
             </button>
           )}
 
