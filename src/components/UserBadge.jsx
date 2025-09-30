@@ -33,7 +33,7 @@ export default function UserBadge() {
       <span style={{ color: "#fff", background: "#1f2937", padding: "4px 8px", borderRadius: 8 }}>
         {nickname || user.displayName || user.email}
       </span>
-      <button onClick={() => signOut(auth)} style={{ padding: "6px 10px", borderRadius: 8, border: "none", background: "#374151", color: "#fff", cursor: "pointer" }}>Salir</button>
+      <button onClick={() => signOut(auth)} style={{ padding: "6px 10px", borderRadius: 8, border: "none", background: "#374151", color: "#fff", cursor: "pointer" }}>Sign Out</button>
     </div>
   );
 }

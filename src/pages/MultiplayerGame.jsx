@@ -146,7 +146,7 @@ export default function MultiplayerGame() {
         
         const randomRes = await fetch(randomUrl);
         if (randomRes.status === 429) {
-          console.log("💤 Límite de requests, esperando 500ms...");
+          console.log("💤 Request limit, waiting 500ms...");
           await new Promise(r => setTimeout(r, 500));
           continue;
         }
@@ -169,7 +169,7 @@ export default function MultiplayerGame() {
 
         const clusterRes = await fetch(clusterUrl);
         if (clusterRes.status === 429) {
-          console.log("💤 Límite de requests cluster, esperando 500ms...");
+          console.log("💤 Cluster request limit, waiting 500ms...");
           await new Promise(r => setTimeout(r, 500));
           continue;
         }
@@ -241,10 +241,10 @@ export default function MultiplayerGame() {
         await new Promise(r => setTimeout(r, 500));
       }
     }
-    console.error("❌ No se encontró un cluster válido tras varios intentos");
+    console.error("❌ No valid cluster found after several attempts");
     
     // Mostrar mensaje de error al usuario
-    setError("Error cargando observaciones. La API de iNaturalist está experimentando problemas. Intenta de nuevo en unos minutos.");
+    setError("Error loading observations. The iNaturalist API is experiencing problems. Try again in a few minutes.");
     
     setIsLoading(false);
   }
@@ -587,8 +587,8 @@ export default function MultiplayerGame() {
     return (
       <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 480, textAlign: "center" }}>
-          <h2 style={{ marginTop: 0 }}>Juego Multijugador</h2>
-          <p style={{ opacity: 0.85, marginBottom: 20 }}>Inicia sesión para jugar.</p>
+          <h2 style={{ marginTop: 0 }}>Multiplayer Game</h2>
+          <p style={{ opacity: 0.85, marginBottom: 20 }}>Sign in to play.</p>
           <button
             onClick={() => window.location.href = "?view=login"}
             style={{
@@ -601,7 +601,7 @@ export default function MultiplayerGame() {
               fontWeight: 600
             }}
           >
-            Iniciar sesión
+            Sign In
           </button>
         </div>
       </div>
@@ -613,14 +613,14 @@ export default function MultiplayerGame() {
       return (
         <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 520, textAlign: "center" }}>
-            <h2 style={{ marginTop: 0 }}>Juego Multijugador (2-10 jugadores)</h2>
-            <div>Tu nick: <b>{nickname || user.email}</b></div>
+            <h2 style={{ marginTop: 0 }}>Multiplayer Game (2-10 players)</h2>
+            <div>Your nick: <b>{nickname || user.email}</b></div>
             <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 12 }}>
-              <button onClick={handleCreate} disabled={loading} style={{ padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#10b981", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}>{loading ? "Creando..." : "Crear sala"}</button>
+              <button onClick={handleCreate} disabled={loading} style={{ padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#10b981", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}>{loading ? "Creating..." : "Create room"}</button>
             </div>
             <div style={{ marginTop: 14 }}>
-              <input value={codeInput} onChange={(e) => setCodeInput(e.target.value)} placeholder="CÓDIGO" style={{ padding: "0.5rem 0.8rem", borderRadius: 8, border: "1px solid #374151", background: "#0b1220", color: "#fff" }} />
-              <button onClick={handleJoin} disabled={loading} style={{ marginLeft: 8, padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#8b5cf6", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer" }}>Unirse</button>
+              <input value={codeInput} onChange={(e) => setCodeInput(e.target.value)} placeholder="CODE" style={{ padding: "0.5rem 0.8rem", borderRadius: 8, border: "1px solid #374151", background: "#0b1220", color: "#fff" }} />
+              <button onClick={handleJoin} disabled={loading} style={{ marginLeft: 8, padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#8b5cf6", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer" }}>Join</button>
             </div>
             {error && <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 12 }}>{error}</div>}
           </div>
@@ -631,7 +631,7 @@ export default function MultiplayerGame() {
     return (
       <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 560, textAlign: "center" }}>
-          <h2 style={{ marginTop: 0 }}>Sala: {room?.code || ""}</h2>
+          <h2 style={{ marginTop: 0 }}>Room: {room?.code || ""}</h2>
           <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
             {players.map(p => (
               <div key={p.id} style={{ background: "#0b1220", padding: 10, borderRadius: 8 }}>
@@ -649,23 +649,23 @@ export default function MultiplayerGame() {
               <button onClick={handleStartGame}
                 disabled={loading}
                 style={{ padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#8b5cf6", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}>
-                {loading ? "Iniciando..." : "Iniciar juego multijugador"}
+                {loading ? "Starting..." : "Start multiplayer game"}
               </button>
             </div>
           ) : players.length < 2 ? (
             <div style={{ marginTop: 12, color: "#fbbf24" }}>
-              Esperando más jugadores... ({players.length}/2-10)
+              Waiting for more players... ({players.length}/2-10)
             </div>
           ) : players.length > 10 ? (
             <div style={{ marginTop: 12, color: "#fca5a5" }}>
-              Demasiados jugadores ({players.length}/10 máximo)
+              Too many players ({players.length}/10 maximum)
             </div>
           ) : null}
           
           {error && <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 12 }}>{error}</div>}
           
           <div style={{ marginTop: 12 }}>
-            <button onClick={handleLeave} style={{ padding: "0.6rem 1rem", background: "#ef4444", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer" }}>Salir de la sala</button>
+            <button onClick={handleLeave} style={{ padding: "0.6rem 1rem", background: "#ef4444", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer" }}>Leave room</button>
           </div>
         </div>
       </div>
@@ -677,7 +677,7 @@ export default function MultiplayerGame() {
       <div className="container-narrow" style={{ padding: "1rem", textAlign: "center" }}>
         <div style={{ position: "fixed", left: 12, top: 12, zIndex: 1000 }}>
           <button 
-            onClick={() => window.location.href = "?view=rooms"}
+            onClick={() => window.location.href = "?view=menu"}
             style={{ 
               padding: "6px 10px", 
               borderRadius: 8, 
@@ -687,16 +687,16 @@ export default function MultiplayerGame() {
               cursor: "pointer" 
             }}
           >
-            Atrás
+            Back
           </button>
         </div>
-        <h1 style={{ fontSize: "24px", fontWeight: "bold" }}>Birders Place - Multijugador</h1>
+        <h1 style={{ fontSize: "24px", fontWeight: "bold" }}>Birders Place - Multiplayer</h1>
         
         {game && (
           <div style={{ marginBottom: "1rem", color: "#fff" }}>
-            <h3 style={{ margin: 0 }}>Ronda {game.round || 1} / {MAX_ROUNDS}</h3>
+            <h3 style={{ margin: 0 }}>Round {game.round || 1} / {MAX_ROUNDS}</h3>
             <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "4px" }}>
-              Host: {game.hostUid === user?.uid ? "Tú" : "Otro jugador"} | Estado: {game.state || "playing"}
+              Host: {game.hostUid === user?.uid ? "You" : "Other player"} | State: {game.state || "playing"}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 12 }}>
               {Object.entries(game.players || {}).map(([uid, p]) => (
@@ -707,9 +707,9 @@ export default function MultiplayerGame() {
                   border: uid === user.uid ? "2px solid #3498db" : "2px solid transparent"
                 }}>
                   <div style={{ fontWeight: 700, color: "#fff", fontSize: "14px" }}>
-                    {p.nickname || (uid === user.uid ? (nickname || "Tú") : "Jugador")}
+                    {p.nickname || (uid === user.uid ? (nickname || "You") : "Player")}
                   </div>
-                  <div style={{ color: "#ecf0f1", fontSize: "12px" }}>Puntos: {(p.totalScore || 0).toLocaleString()}</div>
+                  <div style={{ color: "#ecf0f1", fontSize: "12px" }}>Points: {(p.totalScore || 0).toLocaleString()}</div>
                 </div>
               ))}
             </div>
@@ -720,9 +720,9 @@ export default function MultiplayerGame() {
           <div style={{ marginTop: "1rem", color: "#fbbf24" }}>
             {isLoading ? (
               <div>
-                <div>Cargando ronda...</div>
+                <div>Loading round...</div>
                 <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "4px" }}>
-                  {game?.hostUid === user?.uid ? "Buscando observaciones..." : "Esperando que el host cargue la ronda..."}
+                  {game?.hostUid === user?.uid ? "Searching for observations..." : "Waiting for host to load the round..."}
                 </div>
               </div>
             ) : error ? (
@@ -749,7 +749,7 @@ export default function MultiplayerGame() {
                 )}
               </div>
             ) : (
-              "Esperando ronda..."
+              "Waiting for round..."
             )}
           </div>
         )}
@@ -829,9 +829,9 @@ export default function MultiplayerGame() {
 
         {confirmed && !showResults && (
           <div className="result-panel">
-            <h3 style={{ margin: 0 }}>Ronda {game?.round || 1}</h3>
+            <h3 style={{ margin: 0 }}>Round {game?.round || 1}</h3>
             <div style={{ marginTop: 16, color: "#fbbf24", fontSize: "18px", fontWeight: "bold" }}>
-              ⏳ Esperando a otros jugadores...
+              ⏳ Waiting for other players...
             </div>
           </div>
         )}
@@ -861,7 +861,7 @@ export default function MultiplayerGame() {
               overflow: "auto"
             }}>
               <h2 style={{ color: "#f1c40f", margin: "0 0 1rem 0", textAlign: "center" }}>
-                Ronda {roundResults.round} - Resultados
+                Round {roundResults.round} - Results
               </h2>
               
               {/* Información del juego */}
@@ -881,13 +881,13 @@ export default function MultiplayerGame() {
                         fontWeight: "bold",
                         margin: "0 4px"
                       }}>
-                        {isCurrentPlayer ? "Tú" : (player?.nickname || "Jugador")}
+                        {isCurrentPlayer ? "You" : (player?.nickname || "Player")}
                       </span>
                     );
                   }).reduce((prev, curr, index) => [prev, index === 1 ? " vs " : "", curr])}
                 </div>
                 <div style={{ color: "#9ca3af", fontSize: "14px" }}>
-                  Rondas jugadas: {roundResults.round} | Puntuación total: {Object.entries(roundResults.players).map(([uid, player]) => {
+                  Rounds played: {roundResults.round} | Total score: {Object.entries(roundResults.players).map(([uid, player]) => {
                     const isCurrentPlayer = uid === user?.uid;
                     const totalScore = player?.totalScore ?? 0;
                     
@@ -897,7 +897,7 @@ export default function MultiplayerGame() {
                         fontWeight: "bold",
                         margin: "0 8px"
                       }}>
-                        {isCurrentPlayer ? "Tú" : (player?.nickname || "Jugador")}: {totalScore.toLocaleString()}
+                        {isCurrentPlayer ? "You" : (player?.nickname || "Player")}: {totalScore.toLocaleString()}
                       </span>
                     );
                   }).reduce((prev, curr, index) => [prev, index === 1 ? " | " : "", curr])}
@@ -938,7 +938,7 @@ export default function MultiplayerGame() {
                     </Tooltip>
                   </Marker>
                   
-                  {/* Respuestas de los jugadores */}
+                  {/* Player responses */}
                   {Object.entries(roundResults.guesses).map(([uid, guess], index) => {
                     const isCurrentPlayer = uid === user?.uid;
                     const player = roundResults.players[uid];
@@ -958,7 +958,7 @@ export default function MultiplayerGame() {
                           width: "40px",
                           marginLeft: "-20px"
                         }}>
-                          {isCurrentPlayer ? "TÚ" : (player?.nickname || "Jugador")}
+                          {isCurrentPlayer ? "YOU" : (player?.nickname || "Player")}
                         </Tooltip>
                       </Marker>
                     );
@@ -975,7 +975,7 @@ export default function MultiplayerGame() {
                   marginBottom: "1rem"
                 }}>
                   <h3 style={{ color: "#f1c40f", margin: "0 0 1rem 0", textAlign: "center" }}>
-                    Ranking Total
+                    Total Ranking
                   </h3>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     {roundResults.results.rankings.map((player, index) => {
@@ -999,7 +999,7 @@ export default function MultiplayerGame() {
                               fontWeight: "bold", 
                               color: isCurrentPlayer ? "#8b5cf6" : "#d1d5db" 
                             }}>
-                              {isCurrentPlayer ? "Tú" : player.nickname}
+                              {isCurrentPlayer ? "You" : player.nickname}
                             </span>
                           </div>
                           <div style={{ textAlign: "right" }}>
@@ -1020,7 +1020,7 @@ export default function MultiplayerGame() {
                 </div>
               )}
               
-              {/* Contador de tiempo */}
+              {/* Time counter */}
               <div style={{ textAlign: "center", color: "#9ca3af" }}>
                 {(() => {
                   const maxRounds = game?.maxRounds || 5;
@@ -1040,7 +1040,7 @@ export default function MultiplayerGame() {
                     <>
                       <div style={{ fontSize: "18px", marginBottom: "8px" }}>
                         {status === "finished" ? "Mostrando resultados finales..." : 
-                         isLastRound ? "Ver resultados finales en:" : "Siguiente ronda en:"}
+                         isLastRound ? "View final results in:" : "Next round in:"}
                       </div>
                       <div style={{ 
                         fontSize: "48px", 
@@ -1206,7 +1206,7 @@ export default function MultiplayerGame() {
               color: "#1a1a2e",
               marginTop: "10px"
             }}>
-              {game?.players?.[winner]?.totalScore?.toLocaleString() || 0} puntos
+              {game?.players?.[winner]?.totalScore?.toLocaleString() || 0} points
             </div>
           </div>
 
@@ -1273,7 +1273,7 @@ export default function MultiplayerGame() {
                           color: textColor,
                           textShadow: isTop3 ? "0 1px 2px rgba(0, 0, 0, 0.1)" : "none"
                         }}>
-                          {isCurrentPlayer ? "Tú" : player.nickname}
+                          {isCurrentPlayer ? "You" : player.nickname}
                         </div>
                         {isCurrentPlayer && (
                           <div style={{ 

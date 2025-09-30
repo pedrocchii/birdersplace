@@ -82,7 +82,7 @@ export async function tryMatchmake() {
       const opponentSnap = await transaction.get(opponentRef);
       
       if (!opponentSnap.exists() || opponentSnap.data().status !== "waiting") {
-        console.log("❌ Oponente ya no está disponible");
+        console.log("❌ Opponent no longer available");
         return null;
       }
 
@@ -114,10 +114,11 @@ export async function tryMatchmake() {
         hostUid: user.uid, // El primer usuario es el host
         players: {
           [user.uid]: { hp: 6000, nickname: userNickname },
-          [opponent.uid]: { hp: 6000, nickname: opponent.nickname || "Jugador" },
+          [opponent.uid]: { hp: 6000, nickname: opponent.nickname || "Player" },
         },
         rounds: {},
         guesses: {},
+        matchmaking: true, // Mark as matchmaking duel for leaderboard stats
       });
 
       // Solo actualizar nuestro documento de cola (no podemos actualizar el del oponente por permisos)
@@ -147,7 +148,7 @@ export async function joinMatchAsOpponent(matchId, opponentUid, opponentNickname
   const user = auth.currentUser;
   if (!user) throw new Error("No auth");
 
-  console.log("🤝 Uniéndose al match como oponente:", matchId);
+  console.log("🤝 Joining match as opponent:", matchId);
 
   try {
     // Actualizar nuestro documento de cola
@@ -162,7 +163,7 @@ export async function joinMatchAsOpponent(matchId, opponentUid, opponentNickname
     console.log("✅ Oponente unido al match exitosamente");
     return true;
   } catch (error) {
-    console.log("❌ Error uniéndose al match:", error);
+    console.log("❌ Error joining match:", error);
     return false;
   }
 }
@@ -222,7 +223,7 @@ export function listenMatchmakingQueue(cb) {
     const waitingPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     const myPosition = waitingPlayers.findIndex(p => p.uid === user.uid);
     
-    console.log("📊 Cola actualizada:", waitingPlayers.length, "jugadores, mi posición:", myPosition + 1);
+    console.log("📊 Queue updated:", waitingPlayers.length, "players, my position:", myPosition + 1);
     
     cb({
       waitingPlayers: waitingPlayers.length,
@@ -366,7 +367,7 @@ export async function joinRoomByCode(code, nickname) {
   if (!user) throw new Error("No auth");
   const q = query(collection(db, "rooms"), where("code", "==", code), limit(1));
   const snap = await getDocs(q);
-  if (snap.empty) throw new Error("Código no válido");
+  if (snap.empty) throw new Error("Invalid code");
   const roomDoc = snap.docs[0];
   const playerRef = doc(db, "rooms", roomDoc.id, "players", user.uid);
   await setDoc(playerRef, { uid: user.uid, nickname: nickname || null, joinedAt: serverTimestamp() });
@@ -404,6 +405,117 @@ export async function leaveRoom(roomId) {
   if (pSnap.exists()) await deleteDoc(pRef);
 }
 
+// Función para limpiar datos de duels de forma segura (solo lo que se puede limpiar)
+export async function cleanupDuelsData() {
+  const user = auth.currentUser;
+  if (!user) {
+    console.log("❌ No hay usuario autenticado");
+    return;
+  }
+
+  console.log("🧹 Iniciando limpieza de datos de duels del usuario actual...");
+
+  try {
+    // 1. Limpiar solo la cola del usuario actual (esto siempre funciona)
+    console.log("🗑️ Limpiando cola del usuario actual...");
+    const userQueueRef = doc(db, "duel_queue", user.uid);
+    const userQueueSnap = await getDoc(userQueueRef);
+    
+    let queueDeleted = 0;
+    if (userQueueSnap.exists()) {
+      await deleteDoc(userQueueRef);
+      queueDeleted = 1;
+      console.log("✅ Cola del usuario eliminada");
+    } else {
+      console.log("ℹ️ No user queue to delete");
+    }
+
+    // 2. Eliminar TODOS los matches donde el usuario es HOST (terminados y activos)
+    console.log("🗑️ Eliminando TODOS los matches donde el usuario es host...");
+    const matchesQuery = query(collection(db, "duel_matches"));
+    const matchesSnap = await getDocs(matchesQuery);
+    
+    let matchesDeleted = 0;
+    let matchesSkipped = 0;
+    
+    for (const matchDoc of matchesSnap.docs) {
+      const matchData = matchDoc.data();
+      
+      // Solo intentar eliminar si el usuario es el HOST
+      if (matchData.hostUid === user.uid) {
+        try {
+          await deleteDoc(matchDoc.ref);
+          matchesDeleted++;
+          console.log(`✅ Match eliminado: ${matchDoc.id} (estado: ${matchData.state})`);
+        } catch (error) {
+          console.log(`⚠️ No se pudo eliminar match ${matchDoc.id}:`, error.message);
+          matchesSkipped++;
+        }
+      } else {
+        // No es host, no intentar eliminar
+        matchesSkipped++;
+      }
+    }
+
+    console.log("✅ Limpieza de duels completada");
+    console.log(`📊 Resumen: ${queueDeleted} cola eliminada, ${matchesDeleted} matches eliminados, ${matchesSkipped} matches no tocados`);
+    
+    return {
+      queueDeleted,
+      matchesDeleted,
+      matchesSkipped
+    };
+
+  } catch (error) {
+    console.error("❌ Error durante la limpieza:", error);
+    throw error;
+  }
+}
+
+// Función para limpiar TODOS los datos de duels (DESARROLLO/TESTING)
+export async function cleanupAllDuelsData() {
+  const user = auth.currentUser;
+  if (!user) {
+    console.log("❌ No hay usuario autenticado");
+    return;
+  }
+
+  console.log("🧹 INICIANDO LIMPIEZA COMPLETA DE DUELS (DESARROLLO)...");
+  console.log("⚠️ WARNING: This will delete ALL duel data from ALL users");
+
+  try {
+    // 1. Limpiar TODAS las colas de duels
+    console.log("🗑️ Eliminando TODAS las colas de duels...");
+    const queueQuery = query(collection(db, "duel_queue"));
+    const queueSnap = await getDocs(queueQuery);
+    
+    const queueDeletePromises = queueSnap.docs.map(doc => deleteDoc(doc.ref));
+    await Promise.all(queueDeletePromises);
+    console.log(`✅ ${queueSnap.docs.length} colas eliminadas`);
+
+    // 2. Eliminar TODOS los matches de duels
+    console.log("🗑️ Eliminando TODOS los matches de duels...");
+    const matchesQuery = query(collection(db, "duel_matches"));
+    const matchesSnap = await getDocs(matchesQuery);
+    
+    const matchesDeletePromises = matchesSnap.docs.map(doc => deleteDoc(doc.ref));
+    await Promise.all(matchesDeletePromises);
+    console.log(`✅ ${matchesSnap.docs.length} matches eliminados`);
+
+    console.log("✅ LIMPIEZA COMPLETA DE DUELS COMPLETADA");
+    console.log(`📊 Resumen: ${queueSnap.docs.length} colas eliminadas, ${matchesSnap.docs.length} matches eliminados`);
+    
+    return {
+      queueDeleted: queueSnap.docs.length,
+      matchesDeleted: matchesSnap.docs.length
+    };
+
+  } catch (error) {
+    console.error("❌ Error durante la limpieza completa:", error);
+    throw error;
+  }
+}
+
 export async function createDuelFromRoom(roomId) {
   // crea un duelo 1v1 con los jugadores actuales de la sala
   const rRef = doc(db, "rooms", roomId);
@@ -425,6 +537,7 @@ export async function createDuelFromRoom(roomId) {
     },
     rounds: {},
     guesses: {},
+    matchmaking: false, // Mark as private room duel (no leaderboard stats)
   });
   await updateDoc(rRef, { duelMatchId: matchRef.id });
   return matchRef.id;
@@ -444,7 +557,7 @@ export async function setRoundDataIfAbsent(matchId, round, roundData) {
   });
 }
 
-// Función para calcular puntos como en singleplayer (máx. 5000)
+// Function to calculate points like in singleplayer (max. 5000)
 function calculatePoints(distanceKm, sizeKm = 14916.862) {
   if (distanceKm <= 100) return 5000; // recompensa perfecta a <100 km
   const k = 4; // ligeramente más generoso que antes
@@ -468,22 +581,22 @@ export async function submitGuessAndApplyDamage(matchId, uid, distanceKm, guessL
     roundData.guesses = roundGuesses;
     rounds[round] = roundData;
 
-    // Si ambos respondieron, calculamos puntos como en singleplayer
+    // If both responded, calculate points like in singleplayer
     if (roundGuesses[otherUid] && typeof roundGuesses[otherUid].dist === 'number') {
       const dA = roundGuesses[uid].dist;
       const dB = roundGuesses[otherUid].dist;
       
-      // Calcular puntos para cada jugador (como en singleplayer)
+      // Calculate points for each player (like in singleplayer)
       const pointsA = calculatePoints(dA);
       const pointsB = calculatePoints(dB);
       
-      // Determinar ganador (el que tiene más puntos)
+      // Determine winner (the one with more points)
       const winnerUid = pointsA > pointsB ? uid : otherUid;
       const loserUid = pointsA > pointsB ? otherUid : uid;
       const winnerPoints = pointsA > pointsB ? pointsA : pointsB;
       const loserPoints = pointsA > pointsB ? pointsB : pointsA;
       
-      // El perdedor pierde la diferencia de puntos
+      // The loser loses the point difference
       let damage = winnerPoints - loserPoints;
       
       // Multiplicador de daño progresivo a partir de la ronda 4
@@ -538,7 +651,7 @@ export async function createMultiplayerGameFromRoom(roomId) {
   console.log(`🎮 Creando juego multijugador con ${players.length} jugadores:`, players.map(p => p.nickname || p.uid.slice(0, 6)));
   
   if (players.length < 2) throw new Error("Se necesitan al menos 2 jugadores");
-  if (players.length > 10) throw new Error("Máximo 10 jugadores");
+  if (players.length > 10) throw new Error("Maximum 10 players");
   
   // Crear objeto de jugadores con puntuación inicial y timestamp de conexión
   const playersObj = {};
@@ -700,7 +813,7 @@ function calculateMultiplayerRoundResults(guesses, players) {
     rankings: []
   };
   
-  // Calcular puntos para cada jugador
+  // Calculate points for each player
   Object.entries(guesses).forEach(([uid, guess]) => {
     results.scores[uid] = guess.points;
   });

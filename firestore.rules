@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create, update, delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /nicknames/{nick} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && !exists(/databases/$(database)/documents/nicknames/$(nick));
+      allow update, delete: if false;
+    }
+
+    match /rooms/{roomId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if false;
+
+      match /players/{uid} {
+        allow read: if isSignedIn();
+        allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+      }
+    }
+
+    // REGLAS PARA DUELS - SEGURAS PARA PRODUCCIÓN
+    match /duel_queue/{uid} {
+      allow read, create, update: if isSignedIn() && request.auth.uid == uid; // Solo el propietario puede gestionar su cola
+      allow delete: if isSignedIn() && request.auth.uid == uid; // Solo el propietario puede eliminar su cola
+    }
+
+    match /duel_matches/{matchId} {
+      allow read: if isSignedIn(); // Cualquier usuario autenticado puede leer partidas
+      allow create: if isSignedIn(); // Cualquier usuario autenticado puede crear partidas
+      allow update: if isSignedIn(); // Cualquier usuario autenticado puede actualizar partidas
+      allow delete: if false; // No permitir eliminación de partidas
+    }
+
+    match /multiplayer_games/{gameId} {
+      allow read: if isSignedIn(); // Cualquier usuario autenticado puede leer juegos
+      allow create: if isSignedIn(); // Cualquier usuario autenticado puede crear juegos
+      allow update: if isSignedIn(); // Cualquier usuario autenticado puede actualizar juegos
+      allow delete: if false; // No permitir eliminación de juegos
+    }
+
+    // 🆕 REGLAS PARA EL SISTEMA DE LEADERBOARD Y COPAS
+    match /user_stats/{uid} {
+      allow read: if isSignedIn(); // Cualquier usuario autenticado puede leer las estadísticas
+      allow create, update: if isSignedIn() && request.auth.uid == uid; // Solo el propietario puede crear/actualizar sus estadísticas
+      allow delete: if false; // No permitir eliminación
+    }
+  }
+}

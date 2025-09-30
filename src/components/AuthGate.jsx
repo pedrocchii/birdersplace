@@ -19,7 +19,7 @@ export default function AuthGate({ children }) {
     return () => unsub();
   }, []);
 
-  if (loading) return <div style={{ padding: 16, textAlign: "center" }}>Cargando...</div>;
+  if (loading) return <div style={{ padding: 16, textAlign: "center" }}>Loading...</div>;
 
   async function handleGoogleSignIn() {
     setError("");
@@ -39,7 +39,7 @@ export default function AuthGate({ children }) {
 
   async function handleEmailAuth() {
     if (!email || !password) {
-      setError("Por favor completa todos los campos");
+      setError("Please complete all fields");
       return;
     }
 
@@ -58,12 +58,12 @@ export default function AuthGate({ children }) {
       
       // Traducir errores comunes
       const errorMessages = {
-        'auth/email-already-in-use': 'Este correo ya está registrado',
-        'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres',
-        'auth/invalid-email': 'Correo electrónico inválido',
-        'auth/user-not-found': 'No existe una cuenta con este correo',
-        'auth/wrong-password': 'Contraseña incorrecta',
-        'auth/too-many-requests': 'Demasiados intentos fallidos. Intenta más tarde'
+        'auth/email-already-in-use': 'This email is already registered',
+        'auth/weak-password': 'Password must be at least 6 characters',
+        'auth/invalid-email': 'Invalid email',
+        'auth/user-not-found': 'No account exists with this email',
+        'auth/wrong-password': 'Incorrect password',
+        'auth/too-many-requests': 'Too many failed attempts. Try again later'
       };
       
       setError(errorMessages[code] || code);
@@ -87,18 +87,18 @@ export default function AuthGate({ children }) {
               cursor: "pointer" 
             }}
           >
-            Atrás
+            Back
           </button>
         </div>
         <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 400, textAlign: "center" }}>
           <h2 style={{ marginTop: 0 }}>Birders Place</h2>
-          <p style={{ opacity: 0.85, marginBottom: 20 }}>Inicia sesión para jugar</p>
+          <p style={{ opacity: 0.85, marginBottom: 20 }}>Sign in to play</p>
           
-          {/* Formulario de email */}
+          {/* Email form */}
           <div style={{ marginBottom: 20 }}>
             <input
               type="email"
-              placeholder="Correo electrónico"
+              placeholder="Email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               style={{
@@ -114,7 +114,7 @@ export default function AuthGate({ children }) {
             />
             <input
               type="password"
-              placeholder="Contraseña"
+              placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               style={{
@@ -144,7 +144,7 @@ export default function AuthGate({ children }) {
                 fontWeight: 600
               }}
             >
-              {authLoading ? "Cargando..." : (isSignUp ? "Registrarse" : "Iniciar sesión")}
+              {authLoading ? "Loading..." : (isSignUp ? "Sign Up" : "Sign In")}
             </button>
             <button
               onClick={() => setIsSignUp(!isSignUp)}
@@ -157,11 +157,11 @@ export default function AuthGate({ children }) {
                 textDecoration: "underline"
               }}
             >
-              {isSignUp ? "¿Ya tienes cuenta? Inicia sesión" : "¿No tienes cuenta? Regístrate"}
+              {isSignUp ? "Already have an account? Sign In" : "Don't have an account? Sign Up"}
             </button>
           </div>
 
-          {/* Separador */}
+          {/* Separator */}
           <div style={{ 
             display: "flex", 
             alignItems: "center", 
@@ -174,7 +174,7 @@ export default function AuthGate({ children }) {
             <div style={{ flex: 1, height: 1, background: "#374151" }}></div>
           </div>
 
-          {/* Botón de Google */}
+          {/* Google button */}
           <button
             onClick={handleGoogleSignIn}
             style={{
@@ -189,7 +189,7 @@ export default function AuthGate({ children }) {
               fontWeight: 600
             }}
           >
-            Continuar con Google
+            Continue with Google
           </button>
 
           {error && (
@@ -197,7 +197,7 @@ export default function AuthGate({ children }) {
               {error}
             </div>
           )}
-          <div style={{ marginTop: 15, fontSize: 11, opacity: 0.65 }}>Dominio actual: {window.location.hostname}</div>
+          <div style={{ marginTop: 15, fontSize: 11, opacity: 0.65 }}>Current domain: {window.location.hostname}</div>
         </div>
       </div>
     );
@@ -207,7 +207,7 @@ export default function AuthGate({ children }) {
     <div>
       <div style={{ position: "fixed", right: 12, top: 12, display: "flex", gap: 8, alignItems: "center", zIndex: 1000 }}>
         <span style={{ color: "#fff", background: "#1f2937", padding: "4px 8px", borderRadius: 8 }}>{user.displayName || user.email}</span>
-        <button onClick={() => signOut(auth)} style={{ padding: "6px 10px", borderRadius: 8, border: "none", background: "#374151", color: "#fff", cursor: "pointer" }}>Salir</button>
+        <button onClick={() => signOut(auth)} style={{ padding: "6px 10px", borderRadius: 8, border: "none", background: "#374151", color: "#fff", cursor: "pointer" }}>Sign Out</button>
       </div>
       {children}
     </div>

@@ -20,7 +20,7 @@ export default function NicknameSetup({ onDone }) {
         return;
       }
       try {
-        // Comprobar si ya tiene perfil
+        // Check if user already has a profile
         const userRef = doc(db, "users", u.uid);
         const snap = await getDoc(userRef);
         if (snap.exists() && snap.data()?.nickname) {
@@ -31,8 +31,8 @@ export default function NicknameSetup({ onDone }) {
         }
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.error("Error leyendo perfil:", e);
-        setError("No se pudo comprobar el perfil. Revisa reglas de Firestore.");
+        console.error("Error reading profile:", e);
+        setError("Could not check profile. Review Firestore rules.");
         setLoading(false);
       }
     });
@@ -43,7 +43,7 @@ export default function NicknameSetup({ onDone }) {
     setError("");
     const trimmed = nick.trim();
     if (!NICK_REGEX.test(trimmed)) {
-      setError("El nickname debe tener 3-20 caracteres (letras, números, _ . -)");
+      setError("Nickname must be 3-20 characters (letters, numbers, _ . -)");
       return;
     }
     setSaving(true);
@@ -55,7 +55,7 @@ export default function NicknameSetup({ onDone }) {
       await runTransaction(db, async (tx) => {
         const nickDoc = await tx.get(nickRef);
         if (nickDoc.exists()) {
-          throw new Error("Ese nickname ya está en uso");
+          throw new Error("That nickname is already in use");
         }
         tx.set(nickRef, { uid: user.uid, createdAt: serverTimestamp() });
         tx.set(userRef, {
@@ -70,18 +70,18 @@ export default function NicknameSetup({ onDone }) {
       });
       onDone?.();
     } catch (e) {
-      setError(e.message || "No se pudo guardar");
+      setError(e.message || "Could not save");
     } finally {
       setSaving(false);
     }
   }
 
-  if (loading) return <div style={{ padding: 16, textAlign: "center", color: "#fff" }}>Comprobando perfil...</div>;
+  if (loading) return <div style={{ padding: 16, textAlign: "center", color: "#fff" }}>Checking profile...</div>;
 
   return (
     <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 420, textAlign: "center" }}>
-      <h2 style={{ marginTop: 0 }}>Elige tu nickname</h2>
-      <p style={{ opacity: 0.85, marginTop: 6 }}>Lo usarás en el multijugador. No lo podrás cambiar nunca.</p>
+      <h2 style={{ marginTop: 0 }}>Choose your nickname</h2>
+      <p style={{ opacity: 0.85, marginTop: 6 }}>You will use it in multiplayer. You cannot change it ever.</p>
       <input
         value={nick}
         onChange={(e) => setNick(e.target.value)}
@@ -112,7 +112,7 @@ export default function NicknameSetup({ onDone }) {
           fontWeight: 600,
         }}
       >
-        Guardar
+        Save
       </button>
       {error && <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 12 }}>{error}</div>}
     </div>

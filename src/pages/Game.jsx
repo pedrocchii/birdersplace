@@ -14,7 +14,7 @@ function generateLocationName(lat, lng) {
   return `${latAbs}°${latDir}, ${lngAbs}°${lngDir}`;
 }
 
-// Calcula distancia entre dos puntos (km)
+// Calculate distance between two points (km)
 function haversineDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const toRad = (x) => (x * Math.PI) / 180;
@@ -37,7 +37,7 @@ function formatDistance(distanceKm) {
   return `${km.toLocaleString()} km`;
 }
 
-// Calcula puntos (máx. 5000)
+// Calculate points (max. 5000)
 function calculatePoints(distanceKm, sizeKm = 14916.862) {
   if (distanceKm <= 100) return 5000; // recompensa perfecta a <100 km
   const k = 4; // ligeramente más generoso que antes
@@ -97,14 +97,14 @@ export default function Game({ onBack }) {
 
   function getFinalRank(points) {
     if (points >= 24000) return "👑 Mister Birder";
-    if (points >= 21000) return "🦅 Leyenda de la Ornitología";
-    if (points >= 18000) return "🦉 Maestro Ornitólogo";
+    if (points >= 21000) return "🦅 Ornithology Legend";
+    if (points >= 18000) return "🦉 Master Ornithologist";
     if (points >= 15000) return "🦆 Experto Observador";
     if (points >= 12000) return "🦜 Explorador de Aves";
     if (points >= 9000)  return "🦩 Aprendiz con Talento";
     if (points >= 6000)  return "🐥 Observador Amateur";
-    if (points >= 3000)  return "🐦 Novato Aventurero";
-    return "🐣 Aventurero en Prácticas";
+    if (points >= 3000)  return "🐦 Novice Adventurer";
+    return "🐣 Adventurer in Training";
   }
 
  // Definimos las regiones principales del mundo para equilibrar la distribución
@@ -160,7 +160,7 @@ async function loadObservation() {
 
       const randomRes = await fetch(randomUrl);
       if (randomRes.status === 429) {
-        console.log("💤 Límite de requests, esperando 500ms...");
+        console.log("💤 Request limit, waiting 500ms...");
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
@@ -184,7 +184,7 @@ async function loadObservation() {
 
       const clusterRes = await fetch(clusterUrl);
       if (clusterRes.status === 429) {
-        console.log("💤 Límite de requests cluster, esperando 500ms...");
+        console.log("💤 Cluster request limit, waiting 500ms...");
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
@@ -245,7 +245,7 @@ async function loadObservation() {
     }
   }
 
-  console.error("❌ No se encontró un cluster válido tras varios intentos");
+  console.error("❌ No valid cluster found after several attempts");
   setIsLoading(false);
 }
   
@@ -302,7 +302,7 @@ async function loadObservation() {
 
   function handleNextRound() {
     if (round < MAX_ROUNDS && !isLoading) {
-      // Limpiar estados de ronda previa
+      // Clear previous round states
       setGallery([]);
       setObservation(null);
       setGuess(null);
@@ -350,7 +350,7 @@ async function loadObservation() {
             gap: "0.5rem",
           }}
         >
-          ← Atrás
+          ← Back
         </button>
         <h1 style={{ fontSize: "24px", fontWeight: "bold", margin: 0 }}>Birders Place</h1>
         <div style={{ width: "80px" }}></div> {/* Spacer para centrar el título */}
@@ -368,7 +368,7 @@ async function loadObservation() {
           cursor: isLoading ? "not-allowed" : "pointer",
         }}
       >
-        {isLoading ? "Cargando..." : gallery.length === 0 ? "Cargar Observación" : "Reiniciar"}
+        {isLoading ? "Loading..." : gallery.length === 0 ? "Load Observation" : "Restart"}
       </button>
 
       {gallery.length > 0 && (
@@ -501,19 +501,19 @@ async function loadObservation() {
                 Round {round} / {MAX_ROUNDS}
               </h3>
               <div style={{ marginTop: 6, fontSize: "22px", fontWeight: "bold", color: "#f1c40f" }}>
-                {`${Number(score).toLocaleString()} puntos`}
+                {`${Number(score).toLocaleString()} points`}
               </div>
-              <div className="result-bar" title="Más cerca → más puntos" style={{ marginTop: 8 }}>
+              <div className="result-bar" title="Closer → more points" style={{ marginTop: 8 }}>
                 <span style={{ width: `${Math.min(100, (score / 5000) * 100)}%` }} />
               </div>
               <div style={{ marginTop: 10, color: "#ecf0f1" }}>
-                Lo que adivinaste estaba a
+                What you guessed was at
                 <span style={{ fontWeight: "bold", margin: "0 6px", padding: "2px 6px", background: "#2c3e50", borderRadius: "6px", color: "#f9f9f9" }}>
                   {formatDistance(Number(distance)).toUpperCase()}
                 </span>
-                de la ubicación correcta.
+                from the correct location.
               </div>
-              <div style={{ marginTop: 8 }}>Puntuación total: <span style={{ fontWeight: "bold" }}>{Number(totalScore).toLocaleString()}</span></div>
+              <div style={{ marginTop: 8 }}>Total score: <span style={{ fontWeight: "bold" }}>{Number(totalScore).toLocaleString()}</span></div>
               {round < MAX_ROUNDS ? (
                 <button
                   onClick={handleNextRound}
@@ -528,7 +528,7 @@ async function loadObservation() {
                     cursor: isLoading ? "not-allowed" : "pointer",
                   }}
                 >
-                  {isLoading ? "Cargando..." : "Siguiente ronda"}
+                  {isLoading ? "Loading..." : "Next round"}
                 </button>
               ) : (
                 <div style={{
@@ -541,7 +541,7 @@ async function loadObservation() {
                 }}>
                   <div style={{ fontSize: "18px", opacity: 0.9, marginBottom: 6 }}>¡Juego terminado!</div>
                   <div style={{ fontSize: "32px", fontWeight: "800", background: "linear-gradient(90deg,#f59e0b,#fbbf24)", WebkitBackgroundClip: "text", color: "transparent" }}>
-                    {finalAnimatedScore.toLocaleString()} puntos
+                    {finalAnimatedScore.toLocaleString()} points
                   </div>
                   <div style={{ marginTop: 6, fontWeight: "600" }}>{getFinalRank(totalScore)}</div>
                   <button
@@ -565,6 +565,21 @@ async function loadObservation() {
           )}
         </div>
       )}
+      
+      {/* Credits Footer */}
+      <div style={{ 
+        position: "fixed", 
+        bottom: 10, 
+        right: 10, 
+        fontSize: "10px", 
+        color: "#666",
+        background: "rgba(255,255,255,0.9)",
+        padding: "4px 8px",
+        borderRadius: "4px",
+        zIndex: 1000
+      }}>
+        Images: <a href="https://inaturalist.org" target="_blank" rel="noopener noreferrer" style={{ color: "#10b981" }}>iNaturalist</a>
+      </div>
     </div>
   );
 }

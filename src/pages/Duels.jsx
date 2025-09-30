@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useReducer, useCallback, useMemo } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../firebaseClient";
-import { doc, getDoc, collection, query, where, orderBy, limit, onSnapshot, deleteDoc } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, orderBy, limit, onSnapshot, deleteDoc, runTransaction, setDoc, updateDoc, increment } from "firebase/firestore";
 import { enqueueForDuel, tryMatchmake, cancelQueue, listenQueueDoc, listenMatchmakingQueue, listenForOpponentMatch, listenMatch, setRoundDataIfAbsent, submitGuessAndApplyDamage, updateHeartbeat } from "../services/multiplayer";
 import { MapContainer, TileLayer, Marker, Polyline, useMapEvents, useMap, Tooltip } from "react-leaflet";
 import L from "leaflet";
@@ -9,35 +9,95 @@ import { redMarkerIcon } from "../components/mapIcons";
 import LeafletSizeFix from "../components/LeafletSizeFix";
 import "leaflet/dist/leaflet.css";
 
-export default function Duels() {
-  const [user, setUser] = useState(null);
-  const [nickname, setNickname] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | waiting | matched | finished
-  const [matchId, setMatchId] = useState(null);
-  const [match, setMatch] = useState(null);
-  const [winner, setWinner] = useState(null);
-  const [waitingPlayers, setWaitingPlayers] = useState(0);
-  const [currentRoundDisplayed, setCurrentRoundDisplayed] = useState(0);
-  const lastProcessedRoundRef = useRef(0);
-  const lastProcessedMatchIdRef = useRef(null);
+// Function to update player stats when they win or lose a duel
+// System: +5 cups for win, -5 cups for loss (minimum 0 cups)
+const updatePlayerCups = async (playerUid, playerNickname, isWin) => {
+  try {
+    const playerRef = doc(db, "user_stats", playerUid);
+    
+    await runTransaction(db, async (tx) => {
+      const playerSnap = await tx.get(playerRef);
+      
+      if (playerSnap.exists()) {
+        // Player exists, update stats
+        const currentData = playerSnap.data();
+        
+        if (isWin) {
+          // Player won - gain 5 cups
+          tx.update(playerRef, {
+            duelCups: (currentData.duelCups || 0) + 5,
+            duelWins: (currentData.duelWins || 0) + 1,
+            lastDuelWin: new Date()
+          });
+        } else {
+          // Player lost - lose 5 cups (minimum 0)
+          const newCups = Math.max(0, (currentData.duelCups || 0) - 5);
+          tx.update(playerRef, {
+            duelCups: newCups,
+            duelLosses: (currentData.duelLosses || 0) + 1,
+            lastDuelLoss: new Date()
+          });
+        }
+      } else {
+        // New player, create document
+        if (isWin) {
+          tx.set(playerRef, {
+            uid: playerUid,
+            nickname: playerNickname,
+            duelCups: 5, // New player starts with 5 cups if they win
+            duelWins: 1,
+            duelLosses: 0,
+            firstDuelWin: new Date(),
+            lastDuelWin: new Date()
+          });
+        } else {
+          tx.set(playerRef, {
+            uid: playerUid,
+            nickname: playerNickname,
+            duelCups: 0, // New player starts with 0 cups if they lose
+            duelWins: 0,
+            duelLosses: 1,
+            firstDuelLoss: new Date(),
+            lastDuelLoss: new Date()
+          });
+        }
+      }
+    });
+    
+    console.log(`✅ Stats updated for ${isWin ? 'winner' : 'loser'}:`, playerNickname);
+  } catch (error) {
+    console.error("❌ Error updating player stats:", error);
+  }
+};
 
-  console.log("🎮 Duels component render - status:", status, "matchId:", matchId, "user:", user?.uid);
+// Constants
+const GAME_CONFIG = {
+  INITIAL_HP: 6000,
+  ROUND_TIMER: 20, // seconds
+  RESULTS_COUNTDOWN: 10, // seconds
+  HEARTBEAT_INTERVAL: 10000, // milliseconds
+  MAX_OBSERVATION_ATTEMPTS: 15,
+  RATE_LIMIT_DELAY: 500, // milliseconds
+  TIMEOUT_DISTANCE: 20000, // km for timeout elimination
+};
 
-  // Juego por ronda (similar a Game)
-  const [observation, setObservation] = useState(null);
-  const [gallery, setGallery] = useState([]);
-  const [guess, setGuess] = useState(null);
-  const [distance, setDistance] = useState(null);
-  const [confirmed, setConfirmed] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [lightbox, setLightbox] = useState(null);
-  const [roundLocked, setRoundLocked] = useState(false);
-  const [hasProcessedCurrentRound, setHasProcessedCurrentRound] = useState(false);
-  const [showResults, setShowResults] = useState(false);
-  const [roundResults, setRoundResults] = useState(null);
-  const [countdown, setCountdown] = useState(10);
-  const [processedRounds, setProcessedRounds] = useState(new Set());
+const REGIONS = [
+  { name: "North America", bbox: [-170, 5, -50, 75], weight: 0.5 },
+  { name: "South America", bbox: [-82, -56, -34, 12], weight: 1.0 },
+  { name: "Europe", bbox: [-31, 34, 45, 72], weight: 0.5 },
+  { name: "Africa", bbox: [-20, -35, 52, 37], weight: 1.0 },
+  { name: "Asia", bbox: [25, -10, 180, 55], weight: 1.0 },
+  { name: "Oceania", bbox: [110, -50, 180, 0], weight: 0.5 },
+];
 
+const GAME_STATUS = {
+  IDLE: "idle",
+  WAITING: "waiting", 
+  MATCHED: "matched",
+  FINISHED: "finished"
+};
+
+// Utility functions
   function haversineDistance(lat1, lon1, lat2, lon2) {
     const R = 6371;
     const toRad = (x) => (x * Math.PI) / 180;
@@ -57,96 +117,114 @@ export default function Duels() {
     return `${km.toLocaleString()} km`;
   }
 
-  const REGIONS = [
-    { name: "North America", bbox: [-170, 5, -50, 75], weight: 0.5 }, // Reducido a la mitad
-    { name: "South America", bbox: [-82, -56, -34, 12], weight: 1.0 },
-    { name: "Europe", bbox: [-31, 34, 45, 72], weight: 0.5 }, // Reducido a la mitad
-    { name: "Africa", bbox: [-20, -35, 52, 37], weight: 1.0 },
-    { name: "Asia", bbox: [25, -10, 180, 55], weight: 1.0 },
-    { name: "Oceania", bbox: [110, -50, 180, 0], weight: 0.5 }, // Reducido a la mitad
-  ];
+function getRandomRegion() {
+  return REGIONS[Math.floor(Math.random() * REGIONS.length)];
+}
 
+function buildObservationUrl(region, page = 0) {
+  const [minLng, minLat, maxLng, maxLat] = region.bbox;
+  return `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${page}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
+}
 
+function buildClusterUrl(centerLat, centerLng) {
+  return `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3&captive=false`;
+}
 
-  async function loadObservationForMatch(matchData, hostUid) {
+function filterValidObservations(results) {
+  return (results || []).filter(r => 
+    r.photos && r.photos.length && 
+    r.geojson?.coordinates && 
+    r.geojson.type === "Point"
+  );
+}
+
+function processObservations(observations) {
+  return observations.map(r => ({
+    id: r.id,
+    photo: r.photos[0].url.replace("square", "large"),
+    lat: r.geojson.coordinates[1],
+    lon: r.geojson.coordinates[0],
+    species: r.taxon?.preferred_common_name || r.taxon?.name,
+  }));
+}
+
+function getUniqueSpeciesObservations(observations) {
+  const uniqueSpecies = new Map();
+  observations.forEach(obs => {
+    const speciesName = obs.taxon?.preferred_common_name || obs.taxon?.name || 'Unknown';
+    if (!uniqueSpecies.has(speciesName)) {
+      uniqueSpecies.set(speciesName, obs);
+    }
+  });
+  return Array.from(uniqueSpecies.values());
+}
+
+// Custom hooks
+function useObservationLoader() {
+  const [isLoading, setIsLoading] = useState(false);
+
+  const loadObservations = useCallback(async (matchId, matchData, hostUid) => {
     if (isLoading) return;
+    
     console.log("Starting loadObservationForMatch, isLoading:", isLoading, "matchData:", matchData);
     setIsLoading(true);
-    setGuess(null);
-    setDistance(null);
-    setConfirmed(false);
 
-    console.log("Host loading observation for round:", matchData.round);
-
-    // Usar sistema simple como MultiplayerGame.jsx
-    console.log("🎲 Using simple random selection");
-
-    const maxAttempts = 15;
+    const maxAttempts = GAME_CONFIG.MAX_OBSERVATION_ATTEMPTS;
     let attempts = 0;
     
-    // Delay inicial para evitar peticiones muy rápidas
+    // Initial delay to avoid too rapid requests
     await new Promise(r => setTimeout(r, 1000));
     
     while (attempts < maxAttempts) {
       attempts++;
       console.log(`Attempt ${attempts}/${maxAttempts}`);
+      
       try {
-        // Usar selección simple de región como en MultiplayerGame.jsx
-        const region = REGIONS[Math.floor(Math.random() * REGIONS.length)];
-        const [minLng, minLat, maxLng, maxLat] = region.bbox;
+        const region = getRandomRegion();
         const randomPage = Math.floor(Math.random() * 100);
-        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
+        const randomUrl = buildObservationUrl(region, randomPage);
         
         const randomRes = await fetch(randomUrl);
         
         if (randomRes.status === 429) {
-          console.log("💤 Límite de requests, esperando 500ms...");
-          await new Promise(r => setTimeout(r, 500));
+          console.log("💤 Rate limit, waiting 500ms...");
+          await new Promise(r => setTimeout(r, GAME_CONFIG.RATE_LIMIT_DELAY));
           continue;
         }
 
         const randomData = await randomRes.json();
-        if (!randomData.results || randomData.results.length === 0) continue;
-        const valid = (randomData.results || []).filter(r => r.photos && r.photos.length && r.geojson?.coordinates && r.geojson.type === "Point");
+        const valid = filterValidObservations(randomData.results);
+        
         if (!valid.length) {
           console.log("No valid observations found");
           continue;
         }
-        // Usar selección simple como en MultiplayerGame.jsx
+        
         const base = valid[Math.floor(Math.random() * valid.length)];
         const centerLat = base.geojson.coordinates[1];
         const centerLng = base.geojson.coordinates[0];
 
-        const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3&captive=false`;
-
+        const clusterUrl = buildClusterUrl(centerLat, centerLng);
         const clusterRes = await fetch(clusterUrl);
         
         if (clusterRes.status === 429) {
-          console.log("💤 Límite de requests cluster, esperando 500ms...");
-          await new Promise(r => setTimeout(r, 500));
+          console.log("💤 Cluster rate limit, waiting 500ms...");
+          await new Promise(r => setTimeout(r, GAME_CONFIG.RATE_LIMIT_DELAY));
           continue;
         }
 
         const clusterData = await clusterRes.json();
         if (!clusterData.results || clusterData.results.length < 8) continue;
 
-        const clusterObservations = clusterData.results.filter(
-          r => r.photos && r.photos.length && r.geojson?.coordinates && r.geojson.type === "Point"
-        );
+        const clusterObservations = filterValidObservations(clusterData.results);
 
         if (clusterObservations.length >= 8) {
-          // Usar selección simple como en MultiplayerGame.jsx
           const shuffled = [...clusterObservations].sort(() => Math.random() - 0.5);
           const selected = shuffled.slice(0, 8);
-        const items = selected.map(r => ({
-          id: r.id,
-          photo: r.photos[0].url.replace("square", "large"),
-          lat: r.geojson.coordinates[1],
-          lon: r.geojson.coordinates[0],
-          species: r.taxon?.preferred_common_name || r.taxon?.name,
-        }));
+          const items = processObservations(selected);
+          
         console.log("Found 8 items, saving to match:", items.length);
-        // Solo el host guarda las observaciones en el match
+          
         if (matchId && matchData?.round) {
             console.log("💾 Saving round data to Firestore - MatchId:", matchId, "Round:", matchData.round);
           await setRoundDataIfAbsent(matchId, matchData.round, { items, index: 0 });
@@ -154,162 +232,484 @@ export default function Duels() {
           } else {
             console.log("❌ Cannot save round data - MatchId:", matchId, "Round:", matchData?.round);
         }
+          
         setIsLoading(false);
         return;
         }
 
         await new Promise(r => setTimeout(r, 200));
       } catch (error) {
-        console.error(`Error en intento ${attempts}:`, error);
+        console.error(`Error in attempt ${attempts}:`, error);
         await new Promise(r => setTimeout(r, 200));
       }
     }
-    console.error("❌ No se encontró un cluster válido tras varios intentos");
+    
+    console.error("❌ No valid cluster found after several attempts");
     setIsLoading(false);
-  }
+  }, [isLoading]);
 
-  async function loadObservation() {
-    if (isLoading) return;
-     console.log("🔄 Starting loadObservation, isLoading:", isLoading, "match:", match, "user:", user?.uid);
-    setIsLoading(true);
-    setGuess(null);
-    setDistance(null);
-    setConfirmed(false);
+  return { isLoading, loadObservations };
+}
 
-    // Solo el host puede cargar observaciones
-    if (!match?.hostUid || match.hostUid !== user.uid) {
-       console.log("❌ Not host, skipping loadObservation. User:", user?.uid, "Host:", match?.hostUid);
-      setIsLoading(false);
+function useGameTimer() {
+  const [gameCountdown, setGameCountdown] = useState(GAME_CONFIG.ROUND_TIMER);
+  const countdownStartedRef = useRef(false);
+  const countdownIntervalRef = useRef(null);
+  const currentRoundRef = useRef(0);
+  const timeoutProcessingRef = useRef(false);
+
+  const startTimer = useCallback((round, onTimeout) => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+
+    countdownStartedRef.current = true;
+    currentRoundRef.current = round;
+    setGameCountdown(GAME_CONFIG.ROUND_TIMER);
+    
+    countdownIntervalRef.current = setInterval(() => {
+      setGameCountdown(prev => {
+        if (prev <= 1) {
+          console.log("⏰ Timer reached 0, checking for automatic elimination");
+          if (countdownIntervalRef.current) {
+            clearInterval(countdownIntervalRef.current);
+            countdownIntervalRef.current = null;
+          }
+          onTimeout();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, []);
+
+  const stopTimer = useCallback(() => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    countdownStartedRef.current = false;
+    timeoutProcessingRef.current = false;
+  }, []);
+
+  const resetTimer = useCallback(() => {
+    setGameCountdown(GAME_CONFIG.ROUND_TIMER);
+    countdownStartedRef.current = false;
+    timeoutProcessingRef.current = false;
+  }, []);
+
+  return {
+    gameCountdown,
+    startTimer,
+    stopTimer,
+    resetTimer,
+    timeoutProcessingRef,
+    countdownStartedRef,
+    currentRoundRef
+  };
+}
+
+export default function Duels() {
+  // Core game state
+  const [user, setUser] = useState(null);
+  const [nickname, setNickname] = useState("");
+  const [status, setStatus] = useState(GAME_STATUS.IDLE);
+  const [matchId, setMatchId] = useState(null);
+  const [match, setMatch] = useState(null);
+  const [winner, setWinner] = useState(null);
+  const [waitingPlayers, setWaitingPlayers] = useState(0);
+  
+  // Game round state
+  const [observation, setObservation] = useState(null);
+  const [gallery, setGallery] = useState([]);
+  const [guess, setGuess] = useState(null);
+  const [distance, setDistance] = useState(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [lightbox, setLightbox] = useState(null);
+  const [roundLocked, setRoundLocked] = useState(false);
+  const [hasProcessedCurrentRound, setHasProcessedCurrentRound] = useState(false);
+  
+  // Results state
+  const [showResults, setShowResults] = useState(false);
+  const [roundResults, setRoundResults] = useState(null);
+  const [countdown, setCountdown] = useState(GAME_CONFIG.RESULTS_COUNTDOWN);
+  const [processedRounds, setProcessedRounds] = useState(new Set());
+  
+  // Leaderboard state
+  const [leaderboard, setLeaderboard] = useState([]);
+  
+  // Refs for tracking
+  const [currentRoundDisplayed, setCurrentRoundDisplayed] = useState(0);
+  const lastProcessedRoundRef = useRef(0);
+  const lastProcessedMatchIdRef = useRef(null);
+
+  // Custom hooks
+  const { isLoading, loadObservations } = useObservationLoader();
+  const {
+    gameCountdown,
+    startTimer,
+    stopTimer,
+    resetTimer,
+    timeoutProcessingRef,
+    countdownStartedRef,
+    currentRoundRef
+  } = useGameTimer();
+
+  console.log("🎮 Duels component render - status:", status, "matchId:", matchId, "user:", user?.uid);
+
+  // Load leaderboard data
+  const loadLeaderboard = useCallback(() => {
+    try {
+      const leaderboardRef = collection(db, "user_stats");
+      const q = query(leaderboardRef, orderBy("duelCups", "desc"), limit(10));
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const leaderboardData = snapshot.docs
+          .filter(doc => {
+            const data = doc.data();
+            return data.duelCups && data.duelCups > 0; // Only show players with cups
+          })
+          .map((doc, index) => ({
+            id: doc.id,
+            rank: index + 1,
+            nickname: doc.data().nickname || "Jugador",
+            cups: doc.data().duelCups || 0,
+            wins: doc.data().duelWins || 0,
+            losses: doc.data().duelLosses || 0
+          }));
+        
+        setLeaderboard(leaderboardData);
+        console.log("📊 Leaderboard loaded:", leaderboardData);
+      }, (error) => {
+        console.error("❌ Error loading leaderboard:", error);
+        // Fallback to mock data on error
+        const mockLeaderboard = [
+          { id: "1", rank: 1, nickname: "Champion", cups: 75, wins: 15, losses: 2 }, // 15*5 - 2*5 = 75
+          { id: "2", rank: 2, nickname: "ProPlayer", cups: 60, wins: 12, losses: 3 }, // 12*5 - 3*5 = 60
+          { id: "3", rank: 3, nickname: "Winner", cups: 50, wins: 10, losses: 5 }, // 10*5 - 5*5 = 50
+          { id: "4", rank: 4, nickname: "Master", cups: 40, wins: 8, losses: 4 }, // 8*5 - 4*5 = 40
+          { id: "5", rank: 5, nickname: "Expert", cups: 30, wins: 6, losses: 3 } // 6*5 - 3*5 = 30
+        ];
+        setLeaderboard(mockLeaderboard);
+      });
+      
+      return unsubscribe;
+    } catch (error) {
+      console.error("❌ Error setting up leaderboard:", error);
+      setLeaderboard([]);
+      return null;
+    }
+  }, []);
+
+  // Handle timeout elimination - improved to handle disconnections
+  const handleTimeout = useCallback(async () => {
+    console.log("🔍 handleTimeout called - matchId:", matchId, "user:", user?.uid, "confirmed:", confirmed, "guess:", guess);
+    
+    // Strict validations to prevent multiple executions
+    if (!matchId || !user || confirmed || timeoutProcessingRef.current || guess || status === GAME_STATUS.FINISHED) {
+      console.log("❌ handleTimeout cancelled - matchId:", !!matchId, "user:", !!user, "confirmed:", confirmed, "processing:", timeoutProcessingRef.current, "hasGuess:", !!guess, "status:", status);
       return;
     }
-
-     console.log("✅ Host confirmed, proceeding with loadObservation");
-     console.log("🎯 Host loading observation for round:", match.round);
-
-    const maxAttempts = 8;
-    let attempts = 0;
-    while (attempts < maxAttempts) {
-      attempts++;
-      console.log(`Attempt ${attempts}/${maxAttempts}`);
-      try {
-        const region = REGIONS[Math.floor(Math.random() * REGIONS.length)];
-        const [minLng, minLat, maxLng, maxLat] = region.bbox;
-        const randomPage = Math.floor(Math.random() * 200);
-        const randomUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=100&geo=true&geoprivacy=open&page=${randomPage}&swlat=${minLat}&swlng=${minLng}&nelat=${maxLat}&nelng=${maxLng}&taxon_id=3&captive=false`;
-
-        const randomRes = await fetch(randomUrl);
-        if (randomRes.status === 429) { 
-          console.log("Rate limited, waiting...");
-          await new Promise(r => setTimeout(r, 500)); 
-          continue; 
+    
+    // Verify match has round data before applying timeout
+    if (!match || !match.rounds || !match.rounds[match.round] || !match.rounds[match.round].items) {
+      console.log("❌ handleTimeout cancelled - Match has no round data loaded");
+      return;
+    }
+    
+    // Additional verification: only eliminate if player really didn't click
+    if (guess) {
+      console.log("❌ handleTimeout cancelled - player already clicked:", user?.uid);
+      return;
+    }
+    
+    // Mark as processing to avoid concurrent transactions
+    timeoutProcessingRef.current = true;
+    
+    console.log("⏰ TIMEOUT: Player automatically eliminated for not clicking or verifying");
+    console.log("🔍 Current state - guess:", guess, "matchId:", matchId, "user:", user.uid, "confirmed:", confirmed);
+    
+    try {
+      // Automatically eliminate the player who didn't verify
+      const mRef = doc(db, "duel_matches", matchId);
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(mRef);
+        if (!snap.exists()) {
+          console.log("❌ Match doesn't exist, cancelling automatic elimination");
+          return;
         }
-        const randomData = await randomRes.json();
-        const valid = (randomData.results || []).filter(r => r.photos && r.photos.length && r.geojson?.coordinates && r.geojson.type === "Point");
-        if (!valid.length) {
-          console.log("No valid observations found");
-          continue;
-        }
-        const base = valid[Math.floor(Math.random() * valid.length)];
-        const centerLat = base.geojson.coordinates[1];
-        const centerLng = base.geojson.coordinates[0];
-
-        const clusterUrl = `https://api.inaturalist.org/v1/observations?photos=true&quality_grade=research&order=desc&per_page=50&geo=true&geoprivacy=open&coordinates_obscured=false&lat=${centerLat}&lng=${centerLng}&radius=50&taxon_id=3`;
-        const clusterRes = await fetch(clusterUrl);
-        if (clusterRes.status === 429) { 
-          console.log("Cluster rate limited, waiting...");
-          await new Promise(r => setTimeout(r, 500)); 
-          continue; 
-        }
-        const clusterData = await clusterRes.json();
-        const cluster = (clusterData.results || []).filter(r => r.photos && r.photos.length && r.geojson?.coordinates && r.geojson.type === "Point");
-        if (cluster.length < 8) {
-          console.log("Not enough cluster observations:", cluster.length);
-          continue;
+        const data = snap.data();
+        
+        // Check if game already finished
+        if (data.state === GAME_STATUS.FINISHED) {
+          console.log("❌ Game already finished, cancelling automatic elimination");
+          return;
         }
         
-        // Filtrar para obtener observaciones con especies únicas
-        const uniqueSpecies = new Map();
-        cluster.forEach(obs => {
-          const speciesName = obs.taxon?.preferred_common_name || obs.taxon?.name || 'Unknown';
-          if (!uniqueSpecies.has(speciesName)) {
-            uniqueSpecies.set(speciesName, obs);
+        console.log("🔍 Applying automatic elimination - Match state:", data.state, "Round:", data.round);
+        
+        const players = data.players || {};
+        const currentPlayer = players[user.uid] || {};
+        
+        // Check if player already confirmed (to avoid double elimination)
+        const round = data.round || 1;
+        const rounds = { ...(data.rounds || {}) };
+        const roundData = { ...(rounds[round] || {}) };
+        const roundGuesses = { ...(roundData.guesses || {}) };
+        
+        if (roundGuesses[user.uid]) {
+          console.log("❌ Player already confirmed this round, cancelling elimination:", user.uid);
+        return;
+        }
+        
+        console.log("🔍 Eliminating player by timeout:", user.uid, "Current HP:", currentPlayer.hp);
+        
+        // Check if both players are timing out (neither has made a guess)
+        const playerIds = Object.keys(players);
+        const otherPlayerId = playerIds.find(id => id !== user.uid);
+        const otherPlayerHasGuess = otherPlayerId && roundGuesses[otherPlayerId];
+        const currentPlayerHasGuess = roundGuesses[user.uid];
+        
+        // If neither player has made a guess, it's a double timeout
+        const isDoubleTimeout = !currentPlayerHasGuess && !otherPlayerHasGuess;
+        
+        console.log("🔍 Timeout analysis - Current player has guess:", !!currentPlayerHasGuess, "Other player has guess:", !!otherPlayerHasGuess, "Is double timeout:", isDoubleTimeout);
+        
+        // Eliminate current player (set HP to 0)
+        const updatedPlayers = {
+          ...players,
+          [user.uid]: {
+            ...currentPlayer,
+            hp: 0 // Automatic elimination
           }
+        };
+        
+        // If it's a double timeout, also eliminate the other player
+        if (isDoubleTimeout && otherPlayerId) {
+          console.log("🔍 Double timeout detected - eliminating both players");
+          updatedPlayers[otherPlayerId] = {
+            ...players[otherPlayerId],
+            hp: 0
+          };
+          
+          // Add timeout guess for the other player too
+          roundGuesses[otherPlayerId] = { 
+            dist: GAME_CONFIG.TIMEOUT_DISTANCE, 
+            guess: { lat: 0, lng: 0 }, 
+            distance: GAME_CONFIG.TIMEOUT_DISTANCE,
+            points: 0,
+            timestamp: new Date(),
+            timeout: true,
+            eliminated: true
+          };
+        }
+        
+        // Add timeout guess for current player (elimination)
+        roundGuesses[user.uid] = { 
+          dist: GAME_CONFIG.TIMEOUT_DISTANCE, 
+          guess: guess || { lat: 0, lng: 0 }, 
+          distance: GAME_CONFIG.TIMEOUT_DISTANCE,
+          points: 0,
+          timestamp: new Date(),
+          timeout: true,
+          eliminated: true // Mark as eliminated by timeout
+        };
+        
+        roundData.guesses = roundGuesses;
+        rounds[round] = roundData;
+        
+        // End the match immediately
+        tx.update(mRef, {
+          players: updatedPlayers,
+          rounds: rounds,
+          state: GAME_STATUS.FINISHED, // End the match
+          finishedAt: new Date(),
+          timeoutElimination: true, // Mark as timeout elimination
+          eliminatedPlayer: user.uid, // Player who was eliminated
+          doubleTimeout: isDoubleTimeout // Mark if both players timed out
         });
         
-        // Si tenemos al menos 8 especies únicas, usarlas
-        let selected;
-        if (uniqueSpecies.size >= 8) {
-          const uniqueObservations = Array.from(uniqueSpecies.values());
-          const shuffled = [...uniqueObservations].sort(() => Math.random() - 0.5);
-          selected = shuffled.slice(0, 8);
-        } else {
-          // Si no hay suficientes especies únicas, usar el método original
-          const shuffled = [...cluster].sort(() => Math.random() - 0.5);
-          selected = shuffled.slice(0, 8);
-        }
-        const items = selected.map(r => ({
-          id: r.id,
-          photo: r.photos[0].url.replace("square", "large"),
-          lat: r.geojson.coordinates[1],
-          lon: r.geojson.coordinates[0],
-          species: r.taxon?.preferred_common_name || r.taxon?.name,
-        }));
-        console.log("Found 8 items, saving to match:", items.length);
-        // Solo el host guarda las observaciones en el match
-        if (matchId && match?.round) {
-          await setRoundDataIfAbsent(matchId, match.round, { items, index: 0 });
-          console.log("Saved round data to match");
-        }
-        setIsLoading(false);
-        return;
+        console.log("✅ Player automatically eliminated by timeout - Match ended. Double timeout:", isDoubleTimeout);
+      });
+      
+      setConfirmed(true);
+      setHasProcessedCurrentRound(true);
+      
+      console.log("✅ AUTOMATIC ELIMINATION applied - Rival wins the match");
       } catch (error) {
-        console.error("Error in loadObservation attempt", attempts, error);
-        await new Promise(r => setTimeout(r, 300));
-      }
+      console.error("❌ Error applying automatic elimination:", error);
+    } finally {
+      // Release processing flag
+      timeoutProcessingRef.current = false;
     }
-    console.log("Failed to load observation after all attempts");
-    setIsLoading(false);
-  }
+  }, [matchId, user, confirmed, guess, status, match, timeoutProcessingRef]);
 
-  function MapClickHandler() {
+  // Check for disconnected players and eliminate them
+  const checkDisconnectedPlayers = useCallback(async () => {
+    if (!matchId || !match || status !== GAME_STATUS.MATCHED) return;
+    
+    try {
+      const mRef = doc(db, "duel_matches", matchId);
+      const matchSnap = await getDoc(mRef);
+      
+      if (!matchSnap.exists()) return;
+      
+      const matchData = matchSnap.data();
+      if (matchData.state === GAME_STATUS.FINISHED) return;
+      
+      const players = matchData.players || {};
+      const currentTime = new Date();
+      const DISCONNECT_TIMEOUT = 93000; // 93 seconds
+      
+      // Check each player's last activity
+      for (const [playerId, playerData] of Object.entries(players)) {
+        if (playerData.hp <= 0) continue; // Already eliminated
+        
+        const lastActivity = playerData.lastActivity?.toDate();
+        if (lastActivity && (currentTime - lastActivity) > DISCONNECT_TIMEOUT) {
+          console.log("🔍 Player appears disconnected:", playerId, "Last activity:", lastActivity);
+          
+          // Check if this player has already made a guess this round
+          const round = matchData.round || 1;
+          const roundData = matchData.rounds?.[round];
+          const roundGuesses = roundData?.guesses || {};
+          
+          if (!roundGuesses[playerId]) {
+            console.log("⏰ Eliminating disconnected player:", playerId);
+            
+            await runTransaction(db, async (tx) => {
+              const snap = await tx.get(mRef);
+              if (!snap.exists()) return;
+              
+              const data = snap.data();
+              if (data.state === GAME_STATUS.FINISHED) return;
+              
+              const updatedPlayers = {
+                ...data.players,
+                [playerId]: {
+                  ...data.players[playerId],
+                  hp: 0
+                }
+              };
+              
+              const rounds = { ...(data.rounds || {}) };
+              const currentRoundData = { ...(rounds[round] || {}) };
+              const currentRoundGuesses = { ...(currentRoundData.guesses || {}) };
+              
+              currentRoundGuesses[playerId] = {
+                dist: GAME_CONFIG.TIMEOUT_DISTANCE,
+                guess: { lat: 0, lng: 0 },
+                distance: GAME_CONFIG.TIMEOUT_DISTANCE,
+                points: 0,
+                timestamp: new Date(),
+                timeout: true,
+                eliminated: true,
+                disconnected: true
+              };
+              
+              currentRoundData.guesses = currentRoundGuesses;
+              rounds[round] = currentRoundData;
+              
+              tx.update(mRef, {
+                players: updatedPlayers,
+                rounds: rounds,
+                state: GAME_STATUS.FINISHED,
+                finishedAt: new Date(),
+                timeoutElimination: true,
+                eliminatedPlayer: playerId,
+                disconnectionElimination: true
+              });
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error checking disconnected players:", error);
+    }
+  }, [matchId, match, status]);
+
+  // Clean player state when match ends
+  const cleanPlayerState = useCallback(async () => {
+    if (!user) return;
+    
+    try {
+      console.log("🧹 Cleaning player state after match end");
+      
+      // Clean queue document
+      const queueRef = doc(db, "duel_queue", user.uid);
+      await deleteDoc(queueRef).catch(() => {
+        // Ignore if document doesn't exist
+      });
+      
+      console.log("✅ Player state cleaned successfully");
+    } catch (error) {
+      console.error("❌ Error cleaning player state:", error);
+    }
+  }, [user]);
+
+  // Map components
+  const MapClickHandler = useCallback(() => {
     useMapEvents({
       click(e) { 
-        // Ignorar clicks cuando la ronda está bloqueada o ya confirmada
+        // Ignore clicks when round is locked or already confirmed
         if (roundLocked || confirmed) return;
           setGuess(e.latlng); 
+        
+        // Update player activity when clicking on map
+        if (matchId && user) {
+          const mRef = doc(db, "duel_matches", matchId);
+          runTransaction(db, async (tx) => {
+            const snap = await tx.get(mRef);
+            if (!snap.exists()) return;
+            
+            const data = snap.data();
+            const players = { ...data.players };
+            if (players[user.uid]) {
+              players[user.uid] = {
+                ...players[user.uid],
+                lastActivity: new Date()
+              };
+            }
+            
+            tx.update(mRef, { players });
+          }).catch(error => {
+            console.log("⚠️ Error updating activity on map click:", error);
+          });
+        }
       },
     });
     return null;
-  }
+  }, [roundLocked, confirmed, matchId, user]);
 
-
-  function ResultsMap() {
+  const ResultsMap = useCallback(() => {
     const map = useMap();
     const hasCenteredRef = useRef(false);
     
     useEffect(() => {
       if (!roundResults || !roundResults.observation) return;
       
-      // Solo centrar una vez cuando se muestran los resultados
+      // Only center once when results are shown
       if (!hasCenteredRef.current) {
         const realLocation = [roundResults.observation.lat, roundResults.observation.lon];
         
-        // Centrar sin zoom (mantener zoom actual) y sin animación
+        // Center without zoom (keep current zoom) and without animation
         map.setView(realLocation, map.getZoom(), { animate: false });
         
         hasCenteredRef.current = true;
       }
       
-    }, [roundResults]); // Removido 'map' de las dependencias
+    }, [roundResults, map]);
     
-    // Resetear el flag cuando cambien los resultados
+    // Reset flag when results change
     useEffect(() => {
       hasCenteredRef.current = false;
     }, [roundResults]);
     
     return null;
-  }
+  }, [roundResults]);
 
+  // Authentication effect
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u || null);
@@ -321,50 +721,50 @@ export default function Duels() {
     return () => unsub();
   }, []);
 
-  // Permite abrir directamente con ?match=ID (solo si viene de una sala)
+  // Handle direct match access from room
   useEffect(() => {
-    if (!user) return; // Esperar a que el usuario esté autenticado
+    if (!user) return; // Wait for user authentication
     
     const params = new URLSearchParams(window.location.search);
     const view = params.get("view");
     const matchParam = params.get("match");
     console.log("🔍 URL params check - view:", view, "matchParam:", matchParam, "user:", user?.uid);
     if (view === "duels" && matchParam) {
-      console.log("🎯 Navegando a duelo existente:", matchParam);
-      // Solo establecer como matched si viene de una sala (tiene matchId real)
+      console.log("🎯 Navigating to existing duel:", matchParam);
+      // Only set as matched if coming from a room (has real matchId)
       setMatchId(matchParam);
-      setStatus("matched");
+      setStatus(GAME_STATUS.MATCHED);
     } else {
-      console.log("ℹ️ Navegando a duelo normal, sin matchId");
+      console.log("ℹ️ Navigating to normal duel, no matchId");
     }
   }, [user]);
 
-  // Limpiar cola anterior al cargar el componente (solo si no venimos de una sala)
+  // Clean previous queue on component load (only if not coming from a room)
   useEffect(() => {
     if (!user) return;
     
-    // Verificar si venimos de una sala (tiene parámetro match en la URL)
+    // Check if coming from a room (has match parameter in URL)
     const params = new URLSearchParams(window.location.search);
     const matchParam = params.get("match");
     
     if (matchParam) {
-      console.log("🎯 Viniendo de sala privada, saltando limpieza");
+      console.log("🎯 Coming from private room, skipping cleanup");
       return;
     }
     
-    console.log("🧹 Limpiando cola anterior del usuario");
+    console.log("🧹 Cleaning previous user queue");
     
-    // Limpiar cola y resetear estado completamente
+    // Clean queue and reset state completely
     const cleanup = async () => {
       try {
         await cancelQueue();
-        console.log("✅ Cola anterior limpiada");
+        console.log("✅ Previous queue cleaned");
       } catch (error) {
-        console.log("⚠️ Error limpiando cola anterior:", error);
+        console.log("⚠️ Error cleaning previous queue:", error);
       }
       
-      // Resetear estado para asegurar que empezamos limpio
-      setStatus("idle");
+      // Reset state to ensure we start clean
+      setStatus(GAME_STATUS.IDLE);
       setMatchId(null);
       setMatch(null);
       setWinner(null);
@@ -377,108 +777,208 @@ export default function Duels() {
       setHasProcessedCurrentRound(false);
       setShowResults(false);
       setRoundResults(null);
-      setCountdown(10);
+      setCountdown(GAME_CONFIG.RESULTS_COUNTDOWN);
       setProcessedRounds(new Set());
       setCurrentRoundDisplayed(0);
       lastProcessedRoundRef.current = 0;
       lastProcessedMatchIdRef.current = null;
+      currentRoundRef.current = 0;
       
-      console.log("✅ Estado completamente reseteado");
+      console.log("✅ State completely reset");
     };
     
     cleanup();
   }, [user]);
 
-  // Escuchar la cola de matchmaking
+  // Listen to matchmaking queue
   useEffect(() => {
-    if (!user || matchId) return; // No escuchar si ya tenemos un match
+    if (!user || matchId) return; // Don't listen if we already have a match
     
-    console.log("🎧 Iniciando listener de cola de matchmaking");
+    console.log("🎧 Starting matchmaking queue listener");
     
     const off = listenMatchmakingQueue((queueData) => {
       console.log("📊 Queue data received:", queueData);
       setWaitingPlayers(queueData.waitingPlayers);
       
-      // Solo cambiar a waiting si estamos en la cola
+      // Only change to waiting if we're in the queue
       if (queueData.myPosition > 0) {
-        console.log("✅ Usuario encontrado en cola, posición:", queueData.myPosition);
-        setStatus("waiting");
+        console.log("✅ User found in queue, position:", queueData.myPosition);
+        setStatus(GAME_STATUS.WAITING);
         
-        // Si hay 2+ jugadores, intentar matchmaking (la transacción evitará duplicados)
+        // If there are 2+ players, try matchmaking (transaction will prevent duplicates)
         if (queueData.waitingPlayers >= 2) {
-          console.log("🎯 Hay suficientes jugadores, intentando matchmaking...");
+          console.log("🎯 Enough players, trying matchmaking...");
           tryMatchmake().then((matchId) => {
             if (matchId) {
-              console.log("✅ Match creado exitosamente:", matchId);
+              console.log("✅ Match created successfully:", matchId);
               setMatchId(matchId);
-              setStatus("matched");
-              // NO cargar observaciones aquí, esperar a que el host las cargue en listenMatch
+              setStatus(GAME_STATUS.MATCHED);
+              // DON'T load observations here, wait for host to load them in listenMatch
             } else {
-              console.log("❌ No se pudo crear el match (matchId es null) - probablemente ya fue creado por otro usuario");
+              console.log("❌ Could not create match (matchId is null) - probably already created by another user");
             }
           }).catch((error) => {
-            console.log("❌ Error en matchmaking:", error);
+            console.log("❌ Error in matchmaking:", error);
           });
         }
       } else {
-        console.log("❌ Usuario NO encontrado en cola, myPosition:", queueData.myPosition);
+        console.log("❌ User NOT found in queue, myPosition:", queueData.myPosition);
+        console.log("🔍 Complete queue data:", queueData);
+        console.log("🔍 Current user:", user?.uid);
       }
     });
     
     return () => off();
-  }, [user, matchId]); // Solo dependencias necesarias
+  }, [user, matchId]); // Only necessary dependencies
 
-  // Heartbeat para mantener al usuario activo en la cola
+  // Heartbeat to keep user active in queue
   useEffect(() => {
-    if (!user || status !== "waiting") return;
+    if (!user || status !== GAME_STATUS.WAITING) return;
     
     const heartbeatInterval = setInterval(() => {
       updateHeartbeat();
-    }, 10000); // Cada 10 segundos
+    }, GAME_CONFIG.HEARTBEAT_INTERVAL); // Every 10 seconds
     
     return () => clearInterval(heartbeatInterval);
   }, [user, status]);
 
-  // Escuchar si se creó un match para este usuario usando listenQueueDoc
+  // Listen if a match was created for this user using listenQueueDoc
   useEffect(() => {
     if (!user) return;
     
-    const off = listenQueueDoc((q) => {
+    const off = listenQueueDoc(async (q) => {
       if (!q) return;
-      console.log("📋 Estado de cola del usuario:", q);
+      console.log("📋 User queue status:", q);
       
-      if (q.status === "matched" && q.matchId) {
-        console.log("🎯 Match encontrado para usuario:", q.matchId);
-        setMatchId(q.matchId);
-        setStatus("matched");
-        // NO cargar observaciones aquí, esperar a que el host las cargue en listenMatch
+      if (q.status === GAME_STATUS.MATCHED && q.matchId) {
+        console.log("🎯 Match found for user:", q.matchId);
+        console.log("🔍 Verifying if user is really in queue before processing match");
+        
+        // Check if we're already in a match to avoid double processing
+        if (matchId) {
+          console.log("⚠️ Already in a match, ignoring pairing:", matchId);
+          return;
+        }
+        
+        // CHECK IF MATCH IS FINISHED BEFORE JOINING
+        try {
+          const matchRef = doc(db, "duel_matches", q.matchId);
+          const matchSnap = await getDoc(matchRef);
+          
+          console.log("🔍 Verifying match state before joining user");
+        
+        if (!matchSnap.exists()) {
+            console.log("❌ Match doesn't exist, cleaning queue");
+          await cancelQueue();
+          return;
+        }
+        
+          // Verify that user is really in queue before processing match
+        const queueRef = doc(db, "duel_queue", user.uid);
+        const queueSnap = await getDoc(queueRef);
+          if (!queueSnap.exists() || queueSnap.data().status !== GAME_STATUS.MATCHED) {
+            console.log("❌ User is not really in queue or not matched, ignoring match");
+          return;
+        }
+          
+          const matchData = matchSnap.data();
+          if (matchData.state === GAME_STATUS.FINISHED) {
+            console.log("❌ Match already finished, cleaning queue and state");
+            await cancelQueue();
+            setStatus(GAME_STATUS.IDLE);
+            setMatchId(null);
+            return;
+          }
+          
+          console.log("✅ Valid and active match, joining user");
+          setMatchId(q.matchId);
+          setStatus(GAME_STATUS.MATCHED);
+        } catch (error) {
+          console.log("❌ Error verifying match:", error);
+          // In case of error, clean queue to avoid problems
+          await cancelQueue();
+          setStatus(GAME_STATUS.IDLE);
+          setMatchId(null);
+        }
       }
     });
     
     return () => off();
-  }, [user]);
+  }, [user, matchId]);
 
-  // Escuchar si nuestro oponente fue emparejado con nosotros
+  // Listen if our opponent was matched with us
   useEffect(() => {
-    if (!user || status !== "waiting") return;
+    if (!user || status !== GAME_STATUS.WAITING) return;
     
-    const off = listenForOpponentMatch((matchData) => {
-      console.log("🎯 Oponente fue emparejado con nosotros:", matchData);
-      setMatchId(matchData.matchId);
-      setStatus("matched");
-      // No cargar observaciones aquí, esperar a que el host las cargue
+    const off = listenForOpponentMatch(async (matchData) => {
+      console.log("🎯 Opponent was matched with us:", matchData);
+      
+      // Check if we're already in a match to avoid double processing
+      if (matchId) {
+        console.log("⚠️ Already in a match, ignoring pairing:", matchId);
+        return;
+      }
+      
+      // CHECK IF MATCH IS FINISHED BEFORE JOINING
+      try {
+        const matchRef = doc(db, "duel_matches", matchData.matchId);
+        const matchSnap = await getDoc(matchRef);
+        
+        if (!matchSnap.exists()) {
+          console.log("❌ Match doesn't exist, cleaning queue");
+          await cancelQueue();
+          return;
+        }
+        
+        const match = matchSnap.data();
+        console.log("🔍 Verifying match state (opponent):", {
+          matchId: matchData.matchId,
+          state: match.state,
+          round: match.round,
+          players: Object.keys(match.players || {}),
+          hostUid: match.hostUid
+        });
+        
+        // Verify that user is really in queue before processing match
+        const queueRef = doc(db, "duel_queue", user.uid);
+        const queueSnap = await getDoc(queueRef);
+        if (!queueSnap.exists() || queueSnap.data().status !== GAME_STATUS.MATCHED) {
+          console.log("❌ User is not really in queue or not matched, ignoring match (opponent)");
+          return;
+        }
+        
+        if (match.state === GAME_STATUS.FINISHED) {
+          console.log("❌ Match already finished, cleaning queue and state");
+          await cancelQueue();
+          setStatus(GAME_STATUS.IDLE);
+          setMatchId(null);
+          return;
+        }
+        
+        console.log("✅ Valid and active match, joining user");
+        setMatchId(matchData.matchId);
+        setStatus(GAME_STATUS.MATCHED);
+      } catch (error) {
+        console.log("❌ Error verifying match:", error);
+        // In case of error, clean queue to avoid problems
+        await cancelQueue();
+        setStatus(GAME_STATUS.IDLE);
+        setMatchId(null);
+      }
     });
     
     return () => off();
-  }, [user, status]);
+  }, [user, status, matchId]);
 
+  // Main match listener
   useEffect(() => {
     if (!matchId) return;
+    
     const off = listenMatch(matchId, (m) => {
       console.log("Match update:", m);
       setMatch(m);
       
-      // Resetear estado de rondas cuando se inicia un nuevo match
+      // Reset round state when starting a new match
       if (m.id !== lastProcessedMatchIdRef.current) {
         lastProcessedRoundRef.current = 0;
         lastProcessedMatchIdRef.current = m.id;
@@ -489,50 +989,132 @@ export default function Duels() {
         setRoundLocked(false);
         setHasProcessedCurrentRound(false);
         setProcessedRounds(new Set());
+        
+        // Initialize player activity when joining match
+        if (user && m.players && m.players[user.uid]) {
+          const mRef = doc(db, "duel_matches", matchId);
+          runTransaction(db, async (tx) => {
+            const snap = await tx.get(mRef);
+            if (!snap.exists()) return;
+            
+            const data = snap.data();
+            const players = { ...data.players };
+            if (players[user.uid]) {
+              players[user.uid] = {
+                ...players[user.uid],
+                lastActivity: new Date()
+              };
+            }
+            
+            tx.update(mRef, { players });
+          }).catch(error => {
+            console.log("⚠️ Error initializing player activity:", error);
+          });
+        }
       }
       
-      // Verificar si el juego terminó
-      if (m.state === "finished") {
-           console.log("Game finished, players data:", m.players);
-        setStatus("finished");
+      // Check if game finished
+      if (m.state === GAME_STATUS.FINISHED) {
+        console.log("Game finished, players data:", m.players);
+        setStatus(GAME_STATUS.FINISHED);
         const players = m.players || {};
-           // Detectar ganador: el que NO tiene 0 puntos es el ganador
-           const playersArray = Object.entries(players).map(([uid, p]) => ({ uid, ...p }));
-           const winner = playersArray.find(p => p.hp > 0) || playersArray[0]; // fallback al primer jugador
-           console.log("Players HP:", Object.entries(players).map(([uid, p]) => `${uid}: ${p.hp}`));
-           console.log("Winner detected:", winner);
-           console.log("Current user UID:", user?.uid);
-           setWinner(winner);
         
-        // Mostrar resultados de la última ronda antes de mostrar Game Over
-        const lastRound = m.round - 1; // La ronda que se completó
-        const lastRoundData = m.rounds?.[lastRound];
-        if (lastRoundData && lastRoundData.guesses && Object.keys(lastRoundData.guesses).length === 2 && !showResults) {
-          console.log("Game finished, showing final round results for round", lastRound);
-          setRoundResults({
-            round: lastRound,
-            observation: lastRoundData.items?.[lastRoundData.index] || null,
-            guesses: lastRoundData.guesses,
-            damage: lastRoundData.damage,
-            players: m.players // Usar los HP actualizados del match actual
-          });
-          setShowResults(true);
+        // Detect winner: the one who doesn't have 0 points is the winner
+        const playersArray = Object.entries(players).map(([uid, p]) => ({ uid, ...p }));
+        
+        // Check if it's a double timeout (both players lose)
+        if (m.doubleTimeout) {
+          console.log("🎯 Double timeout detected - both players lose");
+          setWinner(null); // No winner in double timeout
+        } else {
+        const winner = playersArray.find(p => p.hp > 0) || playersArray[0]; // fallback to first player
+        console.log("Players HP:", Object.entries(players).map(([uid, p]) => `${uid}: ${p.hp}`));
+        console.log("Winner detected:", winner);
+        console.log("Current user UID:", user?.uid);
+        setWinner(winner);
+          
+          // Update cups for the winner and losses for the loser
+          // Only update stats if they haven't been updated yet (check for statsProcessed flag)
+          // AND only for matchmaking duels (not private rooms)
+          if (!m.statsProcessed && m.matchmaking === true) {
+            console.log("📊 Processing match stats for matchmaking duel");
+            
+            if (winner && winner.uid) {
+              updatePlayerCups(winner.uid, winner.nickname || "Player", true); // true = win
+            }
+            
+            // Update losses for the loser
+            const loser = playersArray.find(p => p.uid !== winner.uid);
+            if (loser && loser.uid) {
+              updatePlayerCups(loser.uid, loser.nickname || "Player", false); // false = loss
+            }
+            
+            // Mark stats as processed to prevent duplicate updates
+            const mRef = doc(db, "duel_matches", matchId);
+            updateDoc(mRef, { statsProcessed: true }).catch(error => {
+              console.error("❌ Error marking stats as processed:", error);
+            });
+          } else if (m.matchmaking !== true) {
+            console.log("📊 Private room match - stats not updated (only matchmaking duels count for leaderboard)");
+          } else {
+            console.log("📊 Stats already processed for this match, skipping");
+          }
+        }
+        
+        // Clean player state to prevent ghost state
+        cleanPlayerState();
+        
+        // Check if it was timeout elimination
+        if (m.timeoutElimination && m.eliminatedPlayer) {
+          console.log("🎯 Timeout elimination detected - showing special results");
+          const currentRound = m.round || 1;
+          const roundData = m.rounds?.[currentRound];
+          
+          if (roundData && roundData.items && roundData.index !== undefined) {
+            console.log("📊 Showing timeout results for round", currentRound);
+            setRoundResults({
+              round: currentRound,
+              observation: roundData.items[roundData.index] || null,
+              guesses: roundData.guesses || {},
+              damage: null, // No damage in timeout
+              players: m.players,
+              timeoutElimination: true,
+              eliminatedPlayer: m.eliminatedPlayer,
+              doubleTimeout: m.doubleTimeout || false // Pass double timeout flag
+            });
+            setShowResults(true);
+          }
+        } else {
+          // Show results of last round before showing Game Over (normal logic)
+          const lastRound = m.round - 1; // The round that was completed
+          const lastRoundData = m.rounds?.[lastRound];
+          if (lastRoundData && lastRoundData.guesses && Object.keys(lastRoundData.guesses).length === 2 && !showResults) {
+            console.log("Game finished, showing final round results for round", lastRound);
+            setRoundResults({
+              round: lastRound,
+              observation: lastRoundData.items?.[lastRoundData.index] || null,
+              guesses: lastRoundData.guesses,
+              damage: lastRoundData.damage,
+              players: m.players // Use updated HP from current match
+            });
+            setShowResults(true);
+          }
         }
         return;
       }
 
-      // Cargar automáticamente la ronda actual si hay datos
+      // Automatically load current round if there's data
       const r = m.round;
       const rd = m.rounds?.[r];
       console.log("Match update - Round:", r, "Round data:", rd, "User:", user?.uid, "Host:", m.hostUid);
       console.log("All rounds:", m.rounds);
       
-      // Solo resetear si es una ronda completamente nueva (comparar con la ronda procesada anteriormente)
-      // Y no hemos procesado ya esta ronda
+      // Only reset if it's a completely new round (compare with previously processed round)
+      // And we haven't already processed this round
       if (r !== lastProcessedRoundRef.current && !hasProcessedCurrentRound) {
         console.log("Round change detected, resetting state from round", lastProcessedRoundRef.current, "to round", r);
         
-        // Si estamos avanzando de una ronda anterior (no es la primera ronda), mostrar resultados
+        // If we're advancing from a previous round (not the first round), show results
         if (lastProcessedRoundRef.current > 0) {
           const completedRound = lastProcessedRoundRef.current;
           const completedRoundData = m.rounds?.[completedRound];
@@ -560,7 +1142,7 @@ export default function Duels() {
               observation: completedRoundData.items?.[completedRoundData.index] || null,
               guesses: completedRoundData.guesses,
               damage: completedRoundData.damage,
-              players: m.players // Usar los HP actualizados del match actual
+              players: m.players // Use updated HP from current match
             });
             setShowResults(true);
             setProcessedRounds(prev => new Set([...prev, completedRound]));
@@ -573,31 +1155,35 @@ export default function Duels() {
         setRoundLocked(false);
         setHasProcessedCurrentRound(false);
         setCurrentRoundDisplayed(r);
+        // DON'T reset timer here - only when round really changes
         lastProcessedRoundRef.current = r;
       }
       
       if (rd && rd.items && typeof rd.index === 'number') {
-        console.log("✅ Loading round data from match - Items:", rd.items.length, "Index:", rd.index);
-        setGallery(rd.items);
-        const obs = rd.items[rd.index];
-        setObservation(obs);
+      console.log("✅ Loading round data from match - Items:", rd.items.length, "Index:", rd.index);
+      setGallery(rd.items);
+      const obs = rd.items[rd.index];
+      setObservation(obs);
+        // DON'T reset timer here - only when new round really starts
+      
+        // Timer will start in separate useEffect
       } else if (user && m.hostUid === user.uid && !rd) {
          console.log("🎯 Host loading first round - User:", user.uid, "Host:", m.hostUid, "Round:", m.round);
-        // Solo el host carga la primera ronda automáticamente
-        loadObservationForMatch(m, user.uid);
+        // Only host loads first round automatically
+        loadObservations(matchId, m, user.uid);
        } else if (!rd) {
          console.log("⏳ Non-host waiting for host to load round data - User:", user.uid, "Host:", m.hostUid, "Round data:", rd);
-         // Los no-hosts esperan a que el host cargue los datos
+        // Non-hosts wait for host to load data
       }
-
     });
+    
     return () => off();
-  }, [matchId, user]);
+  }, [matchId, user, loadObservations, cleanPlayerState]);
 
-  // Auto-avanzar a la siguiente ronda después de 10 segundos
+  // Auto-advance to next round after 10 seconds
   useEffect(() => {
     if (showResults && roundResults) {
-      setCountdown(10);
+      setCountdown(GAME_CONFIG.RESULTS_COUNTDOWN);
       
       const countdownInterval = setInterval(() => {
         setCountdown(prev => {
@@ -606,13 +1192,17 @@ export default function Duels() {
             setShowResults(false);
             setRoundResults(null);
             
-            // Si el juego ha terminado, no resetear el estado del juego
-            if (status !== "finished") {
+            // If game has finished, don't reset game state
+            if (status !== GAME_STATUS.FINISHED) {
               setGuess(null);
               setDistance(null);
               setConfirmed(false);
               setRoundLocked(false);
               setHasProcessedCurrentRound(false);
+              
+              // Reset timer state for new round
+              console.log("🔄 Resetting timer state for new round");
+              resetTimer();
             }
             return 0;
           }
@@ -622,51 +1212,179 @@ export default function Duels() {
 
       return () => clearInterval(countdownInterval);
     }
-  }, [showResults, roundResults, status]);
+  }, [showResults, roundResults, status, resetTimer]);
 
-  async function handleFind() {
+  // Game timer (90 seconds per round) - Only runs when observation is loaded AND results are not shown
+  useEffect(() => {
+    // Don't start timer if results are being shown
+    if (showResults) {
+      console.log("⏰ Not starting timer - results are being shown");
+      return;
+    }
+    
+    if (status === GAME_STATUS.MATCHED && match && match.state !== GAME_STATUS.FINISHED && !showResults && !roundLocked && observation && 
+        (!countdownStartedRef.current || match.round !== currentRoundRef.current) && 
+        match.rounds && match.rounds[match.round] && match.rounds[match.round].items) {
+      console.log("⏰ Starting 90 second timer for round", match.round);
+      console.log("🔍 Timer state - started:", countdownStartedRef.current, "currentRound:", currentRoundRef.current, "newRound:", match.round);
+      console.log("🔍 Conditions - status:", status, "match:", !!match, "showResults:", showResults, "roundLocked:", roundLocked, "observation:", !!observation);
+      console.log("🔍 Match data:", { id: match.id, state: match.state, round: match.round, players: match.players });
+      console.log("🔍 Round data:", { hasRounds: !!match.rounds, currentRound: match.round, hasItems: !!(match.rounds && match.rounds[match.round] && match.rounds[match.round].items) });
+      
+      const onTimeout = () => {
+        // Only apply automatic elimination if player hasn't confirmed AND hasn't clicked AND game hasn't finished AND match has round data
+        if (!confirmed && !timeoutProcessingRef.current && !guess && status !== GAME_STATUS.FINISHED && 
+                match && match.rounds && match.rounds[match.round] && match.rounds[match.round].items) {
+          console.log("⏰ AUTOMATIC ELIMINATION: Player didn't click or verify in time:", user?.uid);
+              handleTimeout();
+            } else {
+          console.log("⏰ Player already confirmed, clicked, elimination in process, game finished or match without data, skipping:", {
+                confirmed,
+                hasGuess: !!guess,
+                processing: timeoutProcessingRef.current,
+                status: status,
+                userId: user?.uid,
+                hasMatchData: !!(match && match.rounds && match.rounds[match.round] && match.rounds[match.round].items)
+              });
+            }
+      };
+      
+      startTimer(match.round, onTimeout);
+    }
+  }, [observation, match?.round, showResults, status, match, roundLocked, confirmed, guess, user?.uid, handleTimeout, startTimer]);
+
+  // Clean timer only when necessary
+  useEffect(() => {
+    if (status === GAME_STATUS.FINISHED || showResults) {
+      // Clean timer when game ends or results are shown
+      stopTimer();
+      console.log("🧹 Timer cleaned - game finished or showing results");
+    }
+  }, [status, showResults, stopTimer]);
+
+  // Check for disconnected players periodically
+  useEffect(() => {
+    if (status !== GAME_STATUS.MATCHED || !matchId) return;
+    
+    const disconnectCheckInterval = setInterval(() => {
+      checkDisconnectedPlayers();
+    }, 10000); // Check every 10 seconds
+    
+    return () => clearInterval(disconnectCheckInterval);
+  }, [status, matchId, checkDisconnectedPlayers]);
+
+  // Load leaderboard on component mount
+  useEffect(() => {
+    const unsubscribe = loadLeaderboard();
+    return () => {
+      if (unsubscribe && typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, [loadLeaderboard]);
+
+  const handleFind = useCallback(async () => {
     if (!user) return;
     
-    console.log("🔍 Iniciando búsqueda de partida...");
+    // Prevent multiple searches
+    if (status === GAME_STATUS.WAITING || status === GAME_STATUS.MATCHED) {
+      console.log("⚠️ Already in queue or in a match, ignoring search");
+      return;
+    }
+    
+    console.log("🔍 Starting match search...");
     
     try {
-    setStatus("waiting");
-      console.log("✅ Status cambiado a waiting");
+      // Clean any existing queue state before starting new search
+      console.log("🧹 Cleaning any existing queue state before new search");
+      await cancelQueue().catch(error => {
+        console.log("⚠️ Error cleaning previous queue:", error);
+      });
+      
+      // Also clean any remaining queue document
+      try {
+        const userRef = doc(db, "duel_queue", user.uid);
+        await deleteDoc(userRef);
+        console.log("✅ Queue document deleted completely");
+      } catch (error) {
+        console.log("⚠️ Error deleting queue document:", error);
+      }
+      
+      setStatus(GAME_STATUS.WAITING);
+      console.log("✅ Status changed to waiting");
       
       const result = await enqueueForDuel(nickname);
-      console.log("📝 Resultado de enqueueForDuel:", result);
+      console.log("📝 enqueueForDuel result:", result);
       
-      // Si ya se hizo match inmediatamente, configurar el juego
+      // If match was made immediately, configure the game
       if (result.matched && result.matchId) {
-        console.log("🎯 Match encontrado inmediatamente:", result.matchId);
+        console.log("🎯 Match found immediately:", result.matchId);
         setMatchId(result.matchId);
-      setStatus("matched");
-        // NO cargar observaciones aquí, esperar a que el host las cargue en listenMatch
+        setStatus(GAME_STATUS.MATCHED);
+        // DON'T load observations here, wait for host to load them in listenMatch
       } else {
-        console.log("⏳ Usuario agregado a cola, esperando matchmaking...");
-        // Pequeño delay para asegurar que el listener detecte el cambio
+        console.log("⏳ User added to queue, waiting for matchmaking...");
+        // Small delay to ensure listener detects the change
         setTimeout(() => {
-          // No verificar el estado aquí ya que puede haber cambiado por matchmaking
-          console.log("⏳ Usuario agregado a cola, esperando matchmaking...");
+          // Don't check state here as it may have changed due to matchmaking
+          console.log("⏳ User added to queue, waiting for matchmaking...");
         }, 100);
       }
     } catch (error) {
-      console.error("❌ Error buscando partida:", error);
-      setStatus("idle");
+      console.error("❌ Error searching for match:", error);
+      setStatus(GAME_STATUS.IDLE);
     }
-  }
+  }, [user, status, nickname]);
 
-  async function handleCancel() {
+  const handleCancel = useCallback(async () => {
     await cancelQueue();
-    setStatus("idle");
+    setStatus(GAME_STATUS.IDLE);
     setMatchId(null);
-  }
+  }, []);
 
   return (
     <div className="container-narrow" style={{ padding: "1rem", textAlign: "center" }}>
       <div style={{ position: "fixed", left: 12, top: 12, zIndex: 1000 }}>
         <button 
-          onClick={() => window.location.href = "?view=rooms"}
+          onClick={async () => {
+            console.log("🔙 Back button pressed - clearing state");
+            
+            // Clean queue if we're waiting
+            if (status === GAME_STATUS.WAITING) {
+              try {
+                await cancelQueue();
+                console.log("✅ Cola cancelada");
+              } catch (error) {
+                console.log("⚠️ Error cancelando cola:", error);
+              }
+            }
+            
+            // Reset all state
+            setStatus(GAME_STATUS.IDLE);
+            setMatchId(null);
+            setMatch(null);
+            setWinner(null);
+            setObservation(null);
+            setGallery([]);
+            setGuess(null);
+            setDistance(null);
+            setConfirmed(false);
+            setRoundLocked(false);
+            setHasProcessedCurrentRound(false);
+            setShowResults(false);
+            setRoundResults(null);
+            setCountdown(10);
+            setProcessedRounds(new Set());
+            setCurrentRoundDisplayed(0);
+            lastProcessedRoundRef.current = 0;
+            lastProcessedMatchIdRef.current = null;
+            
+            console.log("✅ State completely cleared by Back button");
+            
+            // Navegar de vuelta al menú principal
+            console.log("🔍 Volviendo al menú principal");
+            window.location.href = "?view=menu";
+          }}
           style={{ 
             padding: "6px 10px", 
             borderRadius: 8, 
@@ -676,15 +1394,15 @@ export default function Duels() {
             cursor: "pointer" 
           }}
         >
-           Atrás
+           Back
         </button>
       </div>
       <h1 style={{ fontSize: "24px", fontWeight: "bold" }}>Birders Place - Duels</h1>
       
       {!user && (
         <div style={{ padding: "2rem", color: "#fff", textAlign: "center" }}>
-          <h2 style={{ marginTop: 0 }}>Duelos 1v1</h2>
-          <p style={{ opacity: 0.85, marginBottom: 20 }}>Inicia sesión para jugar.</p>
+          <h2 style={{ marginTop: 0 }}>1v1 Duels</h2>
+          <p style={{ opacity: 0.85, marginBottom: 20 }}>Sign in to play.</p>
           <button
             onClick={() => window.location.href = "?view=login"}
             style={{
@@ -697,38 +1415,122 @@ export default function Duels() {
               fontWeight: 600
             }}
           >
-            Iniciar sesión
+            Sign In
           </button>
         </div>
       )}
       
-      {user && status === "idle" && (
-        <button
-          onClick={handleFind}
-          disabled={isLoading}
-          style={{
+      {user && status === GAME_STATUS.IDLE && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", alignItems: "center" }}>
+          <button
+            onClick={handleFind}
+            disabled={isLoading}
+            style={{
+              padding: "0.5rem 1rem",
+              backgroundColor: isLoading ? "#95a5a6" : "#3498db",
+              color: "white",
+              border: "none",
+              borderRadius: "8px",
+              cursor: isLoading ? "not-allowed" : "pointer",
+            }}
+          >
+            {isLoading ? "Loading..." : "Search 1v1 Match"}
+          </button>
+          
+          {/* Leaderboard Component - Always Visible */}
+          <div style={{
             marginTop: "1rem",
-            padding: "0.5rem 1rem",
-            backgroundColor: isLoading ? "#95a5a6" : "#3498db",
-            color: "white",
-            border: "none",
-            borderRadius: "8px",
-            cursor: isLoading ? "not-allowed" : "pointer",
-          }}
-        >
-          {isLoading ? "Cargando..." : "Buscar partida 1v1"}
-        </button>
+            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+            borderRadius: "12px",
+            padding: "1rem",
+            maxWidth: "400px",
+            width: "100%"
+          }}>
+            <h3 style={{ margin: "0 0 1rem 0", color: "#fff", textAlign: "center" }}>
+              🏆 Top 10 Players
+            </h3>
+            
+            {leaderboard.length === 0 ? (
+              <div style={{ color: "#ecf0f1", textAlign: "center", padding: "1rem" }}>
+                No data yet. Be the first to win!
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {leaderboard.map((player, index) => (
+                  <div
+                    key={player.id}
+            style={{
+                      background: "rgba(255,255,255,0.1)",
+                      borderRadius: "8px",
+                      padding: "0.75rem",
+                      border: index < 3 ? "2px solid #fbbf24" : "1px solid rgba(255,255,255,0.2)"
+                    }}
+                  >
+                    {/* Header con ranking y nombre */}
+                    <div style={{ 
+                      display: "flex", 
+                      alignItems: "center", 
+                      justifyContent: "space-between",
+                      marginBottom: "0.5rem"
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <span style={{ 
+                          color: index < 3 ? "#fbbf24" : "#ecf0f1", 
+                          fontWeight: "bold",
+                          minWidth: "25px",
+                          fontSize: "16px"
+                        }}>
+                          #{player.rank}
+                        </span>
+                        <span style={{ color: "#fff", fontWeight: "bold", fontSize: "16px" }}>
+                          {player.nickname || "Player"}
+                        </span>
+                      </div>
+                      <div style={{ color: "#fbbf24", fontWeight: "bold", fontSize: "16px" }}>
+                        🏆 {player.cups || 0}
+                      </div>
+                    </div>
+                    
+                    {/* Estadísticas detalladas */}
+                    <div style={{ 
+                      display: "flex", 
+                      justifyContent: "space-between",
+                      fontSize: "14px",
+                      color: "#ecf0f1"
+                    }}>
+                      <div style={{ display: "flex", gap: "1rem" }}>
+                          <span style={{ color: "#10b981" }}>
+                            ✅ {player.wins || 0} wins
+                          </span>
+                          <span style={{ color: "#ef4444" }}>
+                            ❌ {player.losses || 0} losses
+                          </span>
+                      </div>
+                      <div style={{ color: "#9ca3af" }}>
+                        {player.wins + player.losses > 0 
+                          ? `${Math.round((player.wins / (player.wins + player.losses)) * 100)}% WR`
+                          : "0% WR"
+                        }
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
+        </div>
       )}
       
-      {user && status === "waiting" && (
+      {user && status === GAME_STATUS.WAITING && (
         <>
           <div style={{ marginTop: "1rem", color: "#fff" }}>
-            🔍 Buscando oponente...
+            🔍 Searching for opponent...
           </div>
           <div style={{ fontSize: "14px", marginTop: "0.5rem", opacity: 0.8 }}>
             {waitingPlayers > 0 
-              ? `👥 ${waitingPlayers} jugador${waitingPlayers > 1 ? 'es' : ''} esperando...`
-              : "⏳ Esperando que se una otro jugador..."
+              ? `👥 ${waitingPlayers} player${waitingPlayers > 1 ? 's' : ''} waiting...`
+              : "⏳ Waiting for another player to join..."
             }
           </div>
           <button
@@ -743,7 +1545,7 @@ export default function Duels() {
               cursor: "pointer",
             }}
           >
-            Cancelar
+            Cancel
           </button>
         </>
       )}
@@ -773,7 +1575,7 @@ export default function Duels() {
             overflow: "auto"
           }}>
             <h2 style={{ color: "#f1c40f", margin: "0 0 1rem 0", textAlign: "center" }}>
-              Ronda {roundResults.round} - Resultados
+              Round {roundResults.round} - Results
             </h2>
             
             {/* Información del duelo */}
@@ -785,7 +1587,7 @@ export default function Duels() {
               textAlign: "center"
             }}>
               <div style={{ color: "#d1d5db", fontSize: "16px", marginBottom: "8px" }}>
-                🥊 Duelo: {Object.entries(roundResults.players).map(([uid, player]) => {
+                🥊 Duel: {Object.entries(roundResults.players).map(([uid, player]) => {
                   const isCurrentPlayer = uid === user?.uid;
                   return (
                     <span key={uid} style={{ 
@@ -793,13 +1595,13 @@ export default function Duels() {
                       fontWeight: "bold",
                       margin: "0 4px"
                     }}>
-                      {isCurrentPlayer ? "Tú" : (player?.nickname || "Jugador")}
+                      {isCurrentPlayer ? "You" : (player?.nickname || "Player")}
                     </span>
                   );
                 }).reduce((prev, curr, index) => [prev, index === 1 ? " vs " : "", curr])}
               </div>
             <div style={{ color: "#9ca3af", fontSize: "14px" }}>
-              Rondas jugadas: {roundResults.round} | Puntos restantes: {Object.entries(roundResults.players).map(([uid, player]) => {
+              Rounds played: {roundResults.round} | Remaining points: {Object.entries(roundResults.players).map(([uid, player]) => {
                 const isCurrentPlayer = uid === user?.uid;
                 // Los HP ya están actualizados después del daño en roundResults.players
                 const finalHp = player?.hp ?? 6000;
@@ -810,7 +1612,7 @@ export default function Duels() {
                     fontWeight: "bold",
                     margin: "0 8px"
                   }}>
-                    {isCurrentPlayer ? "Tú" : (player?.nickname || "Jugador")}: {finalHp.toLocaleString()}
+                    {isCurrentPlayer ? "You" : (player?.nickname || "Player")}: {finalHp.toLocaleString()}
                   </span>
                 );
               }).reduce((prev, curr, index) => [prev, index === 1 ? " | " : "", curr])}
@@ -853,12 +1655,18 @@ export default function Duels() {
                   </Marker>
                 )}
                 
-                {/* Respuestas de los jugadores */}
+                {/* Player responses */}
                 {Object.entries(roundResults.guesses).map(([uid, guess], index) => {
                   const isCurrentPlayer = uid === user?.uid;
                   const player = roundResults.players[uid];
+                  const isEliminated = roundResults.timeoutElimination && uid === roundResults.eliminatedPlayer;
                   const colors = ["#3b82f6", "#10b981"];
-                  const color = colors[index % colors.length];
+                  const color = isEliminated ? "#ef4444" : colors[index % colors.length];
+                  
+                  // Verificar que guess.guess existe antes de renderizar
+                  if (!guess?.guess?.lat || !guess?.guess?.lng) {
+                    return null;
+                  }
                   
                   return (
                     <Marker key={uid} position={[guess.guess.lat, guess.guess.lng]}>
@@ -873,7 +1681,7 @@ export default function Duels() {
                         width: "40px",
                         marginLeft: "-20px"
                       }}>
-                        {isCurrentPlayer ? "TÚ" : (player?.nickname || "Rival")}
+                        {isEliminated ? "❌" : (isCurrentPlayer ? "YOU" : (player?.nickname || "Opponent"))}
                       </Tooltip>
                     </Marker>
                   );
@@ -881,8 +1689,8 @@ export default function Duels() {
               </MapContainer>
             </div>
             
-            {/* Información de daño */}
-            {roundResults.damage && (
+            {/* Información de daño o eliminación por timeout */}
+            {roundResults.timeoutElimination ? (
               <div style={{ 
                 background: "#dc2626", 
                 borderRadius: "8px", 
@@ -891,10 +1699,55 @@ export default function Duels() {
                 textAlign: "center"
               }}>
                 <div style={{ color: "#fff", fontWeight: "bold", fontSize: "18px" }}>
-                  ⚔️ {roundResults.damage.winner} ganó esta ronda!
+                  ⏰ Timeout Elimination!
                 </div>
                 <div style={{ color: "#fecaca", marginTop: "4px" }}>
-                  {roundResults.damage.loser} perdió {roundResults.damage.amount.toLocaleString()} puntos
+                  {roundResults.doubleTimeout
+                    ? "Neither player clicked in time - both eliminated"
+                    : "The opponent didn't click in time and was automatically eliminated"
+                  }
+                </div>
+                <div style={{ color: "#fecaca", marginTop: "8px", fontSize: "14px" }}>
+                  {roundResults.doubleTimeout ? (
+                    <div style={{ color: "#ef4444", fontWeight: "bold" }}>
+                      ⏰ Both players: ❌ Didn't click
+                    </div>
+                  ) : (
+                    Object.entries(roundResults.guesses).map(([uid, guess]) => {
+                    const player = roundResults.players[uid];
+                    const isCurrentPlayer = uid === user?.uid;
+                    const isEliminated = uid === roundResults.eliminatedPlayer;
+                    
+                    if (isEliminated) {
+                      return (
+                        <span key={uid} style={{ margin: "0 8px", color: "#ef4444" }}>
+                            {isCurrentPlayer ? "You" : (player?.nickname || "Player")}: ❌ Didn't click
+                        </span>
+                      );
+                    } else {
+                      return (
+                        <span key={uid} style={{ margin: "0 8px", color: "#10b981" }}>
+                            {isCurrentPlayer ? "You" : (player?.nickname || "Player")}: ✅ Clicked
+                        </span>
+                      );
+                    }
+                    })
+                  )}
+                </div>
+              </div>
+            ) : roundResults.damage && (
+              <div style={{ 
+                background: "#dc2626", 
+                borderRadius: "8px", 
+                padding: "1rem", 
+                marginBottom: "1rem",
+                textAlign: "center"
+              }}>
+                <div style={{ color: "#fff", fontWeight: "bold", fontSize: "18px" }}>
+                  ⚔️ {roundResults.damage.winner} won this round!
+                </div>
+                <div style={{ color: "#fecaca", marginTop: "4px" }}>
+                  {roundResults.damage.loser} lost {roundResults.damage.amount.toLocaleString()} points
                   {roundResults.damage.multiplier && roundResults.damage.multiplier > 1 && (
                     <span style={{ color: "#fbbf24", fontWeight: "bold", marginLeft: "8px" }}>
                       (x{roundResults.damage.multiplier})
@@ -903,12 +1756,12 @@ export default function Duels() {
                 </div>
                 {roundResults.damage.distances && (
                   <div style={{ color: "#fecaca", marginTop: "8px", fontSize: "14px" }}>
-                    Distancias: {Object.entries(roundResults.damage.distances).map(([uid, dist]) => {
+                    Distances: {Object.entries(roundResults.damage.distances).map(([uid, dist]) => {
                       const player = roundResults.players[uid];
                       const isCurrentPlayer = uid === user?.uid;
                       return (
                         <span key={uid} style={{ margin: "0 8px" }}>
-                          {isCurrentPlayer ? "Tú" : (player?.nickname || "Jugador")}: {formatDistance(dist)}
+                          {isCurrentPlayer ? "You" : (player?.nickname || "Player")}: {formatDistance(dist)}
                         </span>
                       );
                     })}
@@ -917,7 +1770,7 @@ export default function Duels() {
               </div>
             )}
             
-            {/* HP actual de ambos jugadores */}
+            {/* Current HP of both players */}
             <div style={{ display: "flex", gap: "1rem", justifyContent: "center", marginBottom: "1rem" }}>
               {Object.entries(roundResults.players).map(([uid, player]) => {
                 const isCurrentPlayer = uid === user?.uid;
@@ -934,7 +1787,7 @@ export default function Duels() {
                     textAlign: "center"
                   }}>
                     <div style={{ fontWeight: "bold", color: isCurrentPlayer ? "#8b5cf6" : "#d1d5db" }}>
-                      {isCurrentPlayer ? "Tú" : (player?.nickname || "Rival")}
+                      {isCurrentPlayer ? "You" : (player?.nickname || "Opponent")}
                     </div>
                     <div style={{ fontSize: "24px", fontWeight: "bold", color: finalHp <= 0 ? "#ef4444" : "#10b981", marginTop: "4px" }}>
                       {finalHp.toLocaleString()} pts
@@ -944,10 +1797,10 @@ export default function Duels() {
               })}
             </div>
             
-            {/* Contador de tiempo */}
+            {/* Time counter */}
             <div style={{ textAlign: "center", color: "#9ca3af" }}>
               <div style={{ fontSize: "18px", marginBottom: "8px" }}>
-                {status === "finished" ? "Mostrando resultados finales..." : "Siguiente ronda en:"}
+                {status === "finished" ? "Showing final results..." : "Next round in:"}
               </div>
               <div style={{ 
                 fontSize: "48px", 
@@ -962,10 +1815,10 @@ export default function Duels() {
         </div>
       )}
 
-      {user && status === "matched" && match && !showResults && (
+      {user && status === GAME_STATUS.MATCHED && match && !showResults && (
         <div style={{ marginTop: "1rem" }}>
           <div style={{ marginBottom: "1rem", color: "#fff" }}>
-            <h3 style={{ margin: 0 }}>¡Match encontrado! Ronda {match.round || 1}</h3>
+            <h3 style={{ margin: 0 }}>Match found! Round {match.round || 1}</h3>
             {match.round >= 4 && (
               <div style={{ 
                 marginTop: 8, 
@@ -980,6 +1833,44 @@ export default function Duels() {
                 🔥 Multiplicador de daño: x{(1.5 + (match.round - 4) * 0.5).toFixed(1)}
               </div>
             )}
+            
+            {/* Game time counter */}
+            <div style={{ textAlign: "center", marginTop: "1rem", marginBottom: "1rem" }}>
+              <div style={{ fontSize: "18px", color: "#9ca3af", marginBottom: "8px" }}>
+                Tiempo restante:
+              </div>
+              <div style={{ 
+                fontSize: "48px", 
+                fontWeight: "bold", 
+                color: gameCountdown <= 10 ? "#ef4444" : gameCountdown <= 30 ? "#f59e0b" : "#10b981",
+                textShadow: "0 0 10px rgba(16, 185, 129, 0.5)"
+              }}>
+                {gameCountdown}
+              </div>
+              {gameCountdown <= 10 && !confirmed && (
+                <div style={{ 
+                  fontSize: "14px", 
+                  color: "#ffffff", 
+                  fontWeight: "bold",
+                  marginTop: "8px",
+                  textShadow: "0 0 5px rgba(0, 0, 0, 0.8)"
+                }}>
+                  ⚠️ Automatic elimination if you don't verify!
+                </div>
+              )}
+              {gameCountdown <= 10 && confirmed && (
+                <div style={{ 
+                  fontSize: "14px", 
+                  color: "#10b981", 
+                  fontWeight: "bold",
+                  marginTop: "8px",
+                  textShadow: "0 0 5px rgba(16, 185, 129, 0.5)"
+                }}>
+                  ✅ You already clicked - Waiting for opponent...
+                </div>
+              )}
+            </div>
+            
             <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 12 }}>
               {Object.entries(match.players || {}).map(([uid, p]) => (
                 <div key={uid} style={{ 
@@ -989,7 +1880,7 @@ export default function Duels() {
                   border: uid === user.uid ? "2px solid #3498db" : "2px solid transparent"
                 }}>
                   <div style={{ fontWeight: 700, color: "#fff" }}>
-                    {p.nickname || (uid === user.uid ? (nickname || "Tú") : "Rival")}
+                    {p.nickname || (uid === user.uid ? (nickname || "You") : "Opponent")}
                   </div>
                   <div style={{ color: "#ecf0f1" }}>Puntos: {(p.hp ?? 6000).toLocaleString()}</div>
                 </div>
@@ -999,7 +1890,7 @@ export default function Duels() {
 
           {!observation && (
             <div style={{ marginTop: "1rem", color: "#fbbf24" }}>
-              {isLoading ? "Cargando ronda..." : "Esperando ronda..."}
+              {isLoading ? "Loading round..." : "Waiting for round..."}
             </div>
           )}
 
@@ -1065,6 +1956,25 @@ export default function Duels() {
                 setDistance(d);
                 setConfirmed(true);
                   setHasProcessedCurrentRound(true);
+                
+                // Update player activity before submitting guess
+                const mRef = doc(db, "duel_matches", matchId);
+                await runTransaction(db, async (tx) => {
+                  const snap = await tx.get(mRef);
+                  if (!snap.exists()) return;
+                  
+                  const data = snap.data();
+                  const players = { ...data.players };
+                  if (players[user.uid]) {
+                    players[user.uid] = {
+                      ...players[user.uid],
+                      lastActivity: new Date()
+                    };
+                  }
+                  
+                  tx.update(mRef, { players });
+                });
+                
                 await submitGuessAndApplyDamage(matchId, user.uid, d, { lat: guess.lat, lng: guess.lng });
                   // No mostrar la ubicación real hasta que ambos terminen
                 } catch (error) {
@@ -1094,7 +2004,7 @@ export default function Duels() {
 
           {confirmed && !showResults && (
             <div className="result-panel">
-              <h3 style={{ margin: 0 }}>Ronda {match.round || 1}</h3>
+              <h3 style={{ margin: 0 }}>Round {match.round || 1}</h3>
               {match.round >= 4 && (
                 <div style={{ 
                   marginTop: 8, 
@@ -1110,16 +2020,16 @@ export default function Duels() {
               </div>
               )}
               <div style={{ marginTop: 16, color: "#fbbf24", fontSize: "18px", fontWeight: "bold" }}>
-                ⏳ Esperando al rival...
+                ⏳ Waiting for opponent...
               </div>
               </div>
           )}
         </div>
       )}
 
-      {status === "finished" && winner && match && (
+      {status === GAME_STATUS.FINISHED && match && (
         <div className="result-panel" style={{ background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" }}>
-          <h2 style={{ margin: 0, color: "#fff" }}>🎉 ¡Juego terminado!</h2>
+          <h2 style={{ margin: 0, color: "#fff" }}>🎉 Game finished!</h2>
           {console.log("Game Over screen - match.players:", match.players)}
           
           {/* Información del duelo final */}
@@ -1131,7 +2041,7 @@ export default function Duels() {
             textAlign: "center"
           }}>
             <div style={{ color: "#fff", fontSize: "18px", marginBottom: "8px" }}>
-              🥊 Duelo: {Object.entries(match.players || {}).map(([uid, player]) => {
+              🥊 Duel: {Object.entries(match.players || {}).map(([uid, player]) => {
                     const isCurrentPlayer = uid === user?.uid;
                     return (
                   <span key={uid} style={{ 
@@ -1139,16 +2049,16 @@ export default function Duels() {
                     fontWeight: "bold",
                     margin: "0 4px"
                   }}>
-                    {isCurrentPlayer ? "Tú" : (player?.nickname || "Jugador")}
+                    {isCurrentPlayer ? "You" : (player?.nickname || "Player")}
                   </span>
                 );
               }).reduce((prev, curr, index) => [prev, index === 1 ? " vs " : "", curr])}
                         </div>
             <div style={{ color: "#ecf0f1", fontSize: "16px", marginBottom: "8px" }}>
-              Rondas jugadas: {match.round || 1}
+              Rounds played: {match.round || 1}
                         </div>
             <div style={{ color: "#ecf0f1", fontSize: "16px" }}>
-              Puntos finales: {Object.entries(match.players || {}).map(([uid, player]) => {
+              Final points: {Object.entries(match.players || {}).map(([uid, player]) => {
                 const isCurrentPlayer = uid === user?.uid;
                 return (
                   <span key={uid} style={{ 
@@ -1156,45 +2066,56 @@ export default function Duels() {
                     fontWeight: "bold",
                     margin: "0 8px"
                   }}>
-                    {isCurrentPlayer ? "Tú" : (player?.nickname || "Jugador")}: {(player?.hp ?? 0).toLocaleString()}
+                    {isCurrentPlayer ? "You" : (player?.nickname || "Player")}: {(player?.hp ?? 0).toLocaleString()}
                   </span>
                 );
               }).reduce((prev, curr, index) => [prev, index === 1 ? " | " : "", curr])}
                       </div>
                     </div>
           
+          {/* Check if it's a double timeout (both players lose) */}
+          {match.doubleTimeout ? (
+            <div style={{ marginTop: 12, fontSize: "24px", fontWeight: "bold", color: "#e74c3c" }}>
+              ⏰ Both players lost due to timeout!
+            </div>
+          ) : winner ? (
           <div style={{ marginTop: 12, fontSize: "24px", fontWeight: "bold", color: "#fbbf24" }}>
-            Ganador: {winner.nickname || "Rival"}
+            Winner: {winner.nickname || "Opponent"}
           </div>
+          ) : null}
+          
           <div style={{ marginTop: 8, color: "#ecf0f1" }}>
              {(() => {
+               if (match.doubleTimeout) {
+                 return "⏰ Neither player verified in time. Both lost!";
+               } else if (winner) {
                const isWinner = winner.uid === user?.uid;
                console.log("Message check - Winner UID:", winner?.uid, "User UID:", user?.uid, "Is winner:", isWinner);
                return isWinner ? 
-                 "¡Felicidades por la victoria! 🎉" : 
-                 "¡Mejor suerte la próxima vez! 💪";
+                         "Congratulations on the victory! 🎉" :
+                   "Better luck next time! 💪";
+               }
+               return "";
              })()}
           </div>
           <button
              onClick={async () => {
                console.log("🔄 Reiniciando juego - limpiando todo el estado");
                
-               // Limpiar cola anterior completamente
-               await cancelQueue().catch(error => {
-                 console.log("⚠️ Error limpiando cola anterior:", error);
-               });
+               // Clean player state completely
+               await cleanPlayerState();
                
-               // También limpiar cualquier documento de cola que pueda quedar
+               // Also clean any remaining queue document
                try {
                  const userRef = doc(db, "duel_queue", user.uid);
                  await deleteDoc(userRef);
-                 console.log("✅ Documento de cola eliminado completamente");
+                 console.log("✅ Queue document deleted completely");
                } catch (error) {
-                 console.log("⚠️ Error eliminando documento de cola:", error);
+                 console.log("⚠️ Error deleting queue document:", error);
                }
                
-               // Resetear todo el estado
-              setStatus("idle");
+               // Reset all state
+              setStatus(GAME_STATUS.IDLE);
               setMatchId(null);
               setMatch(null);
               setWinner(null);
@@ -1215,21 +2136,9 @@ export default function Duels() {
                
                console.log("✅ Estado completamente limpiado");
                
-               // Detectar si venimos de sala privada o matchmaking
-               const params = new URLSearchParams(window.location.search);
-               const matchParam = params.get("match");
-               
-               if (matchParam) {
-                 // Veníamos de una sala privada, volver a la sala
-                 console.log("🏠 Volviendo a la sala privada");
-                 window.location.href = "?view=rooms";
-               } else {
-                 // Veníamos de matchmaking, limpiar URL completamente y ir al matchmaking
-                 console.log("🔍 Volviendo al matchmaking 1v1 - limpiando URL");
-                 window.location.href = "?view=duels";
-                 // Limpiar la URL para evitar que se mantenga el matchId anterior
-                 window.history.replaceState({}, document.title, "?view=duels");
-               }
+               // Navegar de vuelta a la vista de duels para buscar nueva partida
+               console.log("🔍 Volviendo a la vista de duels para buscar nueva partida");
+               window.location.href = "?view=duels";
             }}
             style={{
               marginTop: 16,
@@ -1242,7 +2151,7 @@ export default function Duels() {
               boxShadow: "0 6px 14px rgba(239,68,68,0.25)"
             }}
           >
-            Jugar de nuevo
+            Play again
           </button>
         </div>
       )}
@@ -1255,6 +2164,21 @@ export default function Duels() {
           <img className="lightbox-img" src={lightbox} alt="Foto" />
         </div>
       )}
+      
+      {/* Credits Footer */}
+      <div style={{ 
+        position: "fixed", 
+        bottom: 10, 
+        right: 10, 
+        fontSize: "10px", 
+        color: "#666",
+        background: "rgba(255,255,255,0.9)",
+        padding: "4px 8px",
+        borderRadius: "4px",
+        zIndex: 1000
+      }}>
+        Images: <a href="https://inaturalist.org" target="_blank" rel="noopener noreferrer" style={{ color: "#10b981" }}>iNaturalist</a>
+      </div>
     </div>
   );
 }

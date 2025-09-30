@@ -49,7 +49,7 @@ export default function RoomLobby() {
     // Escuchar notificaciones de juego listo
     const off3 = listenGameReadyNotification(roomId, user.uid, (notification) => {
       if (notification?.gameId) {
-        console.log("🎮 Notificación de juego listo recibida, navegando...");
+        console.log("🎮 Game ready notification received, navigating...");
         setGameId(notification.gameId);
         window.location.href = `?view=multiplayer&game=${notification.gameId}`;
       }
@@ -101,7 +101,7 @@ export default function RoomLobby() {
     return (
       <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 480, textAlign: "center" }}>
-          <h2 style={{ marginTop: 0 }}>Salas privadas</h2>
+          <h2 style={{ marginTop: 0 }}>Private rooms</h2>
           <p style={{ opacity: 0.85, marginBottom: 20 }}>Inicia sesión para crear o unirte a una sala.</p>
           <button
             onClick={() => window.location.href = "?view=login"}
@@ -126,7 +126,7 @@ export default function RoomLobby() {
     return (
       <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 520, textAlign: "center" }}>
-          <h2 style={{ marginTop: 0 }}>Salas privadas</h2>
+          <h2 style={{ marginTop: 0 }}>Private rooms</h2>
           <div>Tu nick: <b>{nickname || user.email}</b></div>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 12 }}>
             <button onClick={handleCreate} disabled={loading} style={{ padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#10b981", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}>{loading ? "Creando..." : "Crear sala"}</button>
@@ -144,7 +144,7 @@ export default function RoomLobby() {
   return (
     <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
       <div style={{ background: "#111827", padding: 24, borderRadius: 12, color: "#fff", width: 560, textAlign: "center" }}>
-        <h2 style={{ marginTop: 0 }}>Sala: {room?.code || ""}</h2>
+        <h2 style={{ marginTop: 0 }}>Room: {room?.code || ""}</h2>
         <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
           {players.map(p => (
             <div key={p.id} style={{ background: "#0b1220", padding: 10, borderRadius: 8 }}>
@@ -202,19 +202,19 @@ export default function RoomLobby() {
             }}
             disabled={loading}
             style={{ padding: "0.6rem 1rem", background: loading ? "#6b7280" : "#f59e0b", color: "#fff", border: "none", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}>
-              {loading ? "Iniciando..." : `Iniciar multijugador (${players.length} jugadores)`}
+              {loading ? "Starting..." : `Start multiplayer (${players.length} players)`}
             </button>
           </div>
         ) : players.length < 2 && (
           <div style={{ marginTop: 12, color: "#fbbf24" }}>
-            Esperando más jugadores... (2/2)
+            Waiting for more players... (2/2)
           </div>
         )}
         
         {error && <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 12 }}>{error}</div>}
         
         <div style={{ marginTop: 12 }}>
-          <button onClick={handleLeave} style={{ padding: "0.6rem 1rem", background: "#ef4444", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer" }}>Salir de la sala</button>
+          <button onClick={handleLeave} style={{ padding: "0.6rem 1rem", background: "#ef4444", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer" }}>Leave room</button>
         </div>
       </div>
     </div>
