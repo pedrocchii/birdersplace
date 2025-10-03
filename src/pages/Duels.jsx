@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useReducer, useCallback, useMemo } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../firebaseClient";
-import { doc, getDoc, collection, query, where, orderBy, limit, onSnapshot, deleteDoc, runTransaction, setDoc, updateDoc, increment } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, orderBy, limit, onSnapshot, deleteDoc, runTransaction, setDoc, updateDoc, increment, serverTimestamp } from "firebase/firestore";
 import { enqueueForDuel, tryMatchmake, cancelQueue, listenQueueDoc, listenMatchmakingQueue, listenForOpponentMatch, listenMatch, setRoundDataIfAbsent, submitGuessAndApplyDamage, updateHeartbeat } from "../services/multiplayer";
 import { MapContainer, TileLayer, Marker, Polyline, useMapEvents, useMap, Tooltip } from "react-leaflet";
 import L from "leaflet";
@@ -73,12 +73,13 @@ const updatePlayerCups = async (playerUid, playerNickname, isWin) => {
 // Constants
 const GAME_CONFIG = {
   INITIAL_HP: 6000,
-  ROUND_TIMER: 90, // seconds
+  ROUND_TIMER: 30, // seconds
   RESULTS_COUNTDOWN: 10, // seconds
   HEARTBEAT_INTERVAL: 10000, // milliseconds
   MAX_OBSERVATION_ATTEMPTS: 15,
   RATE_LIMIT_DELAY: 500, // milliseconds
   TIMEOUT_DISTANCE: 20000, // km for timeout elimination
+  LOADING_TIMEOUT: 20000, // milliseconds - timeout for observation loading
 };
 
 const REGIONS = [
@@ -330,6 +331,9 @@ export default function Duels() {
   const [roundLocked, setRoundLocked] = useState(false);
   const [hasProcessedCurrentRound, setHasProcessedCurrentRound] = useState(false);
   
+  // Loading timeout state
+  const [loadingTimeoutRef, setLoadingTimeoutRef] = useState(null);
+  
   // Results state
   const [showResults, setShowResults] = useState(false);
   const [roundResults, setRoundResults] = useState(null);
@@ -410,8 +414,8 @@ export default function Duels() {
     console.log("🔍 handleTimeout called - matchId:", matchId, "user:", user?.uid, "confirmed:", confirmed, "guess:", guess);
     
     // Strict validations to prevent multiple executions
-    if (!matchId || !user || confirmed || timeoutProcessingRef.current || guess || status === GAME_STATUS.FINISHED) {
-      console.log("❌ handleTimeout cancelled - matchId:", !!matchId, "user:", !!user, "confirmed:", confirmed, "processing:", timeoutProcessingRef.current, "hasGuess:", !!guess, "status:", status);
+    if (!matchId || !user || timeoutProcessingRef.current || status === GAME_STATUS.FINISHED) {
+      console.log("❌ handleTimeout cancelled - matchId:", !!matchId, "user:", !!user, "processing:", timeoutProcessingRef.current, "status:", status);
       return;
     }
     
@@ -421,17 +425,10 @@ export default function Duels() {
       return;
     }
     
-    // Additional verification: only eliminate if player really didn't click
-    if (guess) {
-      console.log("❌ handleTimeout cancelled - player already clicked:", user?.uid);
-      return;
-    }
-    
     // Mark as processing to avoid concurrent transactions
     timeoutProcessingRef.current = true;
     
-    console.log("⏰ TIMEOUT: Player automatically eliminated for not clicking or verifying");
-    console.log("🔍 Current state - guess:", guess, "matchId:", matchId, "user:", user.uid, "confirmed:", confirmed);
+    console.log("⏰ TIMEOUT: Checking for elimination - Current player confirmed:", confirmed, "hasGuess:", !!guess);
     
     try {
       // Automatically eliminate the player who didn't verify
@@ -455,48 +452,73 @@ export default function Duels() {
         const players = data.players || {};
         const currentPlayer = players[user.uid] || {};
         
-        // Check if player already confirmed (to avoid double elimination)
+        // Check current round data
         const round = data.round || 1;
         const rounds = { ...(data.rounds || {}) };
         const roundData = { ...(rounds[round] || {}) };
         const roundGuesses = { ...(roundData.guesses || {}) };
         
-        if (roundGuesses[user.uid]) {
-          console.log("❌ Player already confirmed this round, cancelling elimination:", user.uid);
-        return;
-        }
-        
-        console.log("🔍 Eliminating player by timeout:", user.uid, "Current HP:", currentPlayer.hp);
-        
-        // Check if both players are timing out (neither has made a guess)
+        // Get opponent info
         const playerIds = Object.keys(players);
         const otherPlayerId = playerIds.find(id => id !== user.uid);
         const otherPlayerHasGuess = otherPlayerId && roundGuesses[otherPlayerId];
         const currentPlayerHasGuess = roundGuesses[user.uid];
         
-        // If neither player has made a guess, it's a double timeout
-        const isDoubleTimeout = !currentPlayerHasGuess && !otherPlayerHasGuess;
+        console.log("🔍 Timeout analysis - Current player has guess:", !!currentPlayerHasGuess, "Other player has guess:", !!otherPlayerHasGuess);
         
-        console.log("🔍 Timeout analysis - Current player has guess:", !!currentPlayerHasGuess, "Other player has guess:", !!otherPlayerHasGuess, "Is double timeout:", isDoubleTimeout);
-        
-        // Eliminate current player (set HP to 0)
-        const updatedPlayers = {
-          ...players,
-          [user.uid]: {
-            ...currentPlayer,
-            hp: 0 // Automatic elimination
-          }
-        };
-        
-        // If it's a double timeout, also eliminate the other player
-        if (isDoubleTimeout && otherPlayerId) {
-          console.log("🔍 Double timeout detected - eliminating both players");
-          updatedPlayers[otherPlayerId] = {
-            ...players[otherPlayerId],
-            hp: 0
+        // Case 1: Current player hasn't made a guess - eliminate current player
+        if (!currentPlayerHasGuess) {
+          console.log("🔍 Eliminating current player by timeout:", user.uid, "Current HP:", currentPlayer.hp);
+          
+          const updatedPlayers = {
+            ...players,
+            [user.uid]: {
+              ...currentPlayer,
+              hp: 0 // Automatic elimination
+            }
           };
           
-          // Add timeout guess for the other player too
+          // Add timeout guess for current player (elimination)
+          roundGuesses[user.uid] = { 
+            dist: GAME_CONFIG.TIMEOUT_DISTANCE, 
+            guess: guess || { lat: 0, lng: 0 }, 
+            distance: GAME_CONFIG.TIMEOUT_DISTANCE,
+            points: 0,
+            timestamp: new Date(),
+            timeout: true,
+            eliminated: true // Mark as eliminated by timeout
+          };
+          
+          roundData.guesses = roundGuesses;
+          rounds[round] = roundData;
+          
+          // End the match immediately
+          tx.update(mRef, {
+            players: updatedPlayers,
+            rounds: rounds,
+            state: GAME_STATUS.FINISHED, // End the match
+            finishedAt: new Date(),
+            timeoutElimination: true, // Mark as timeout elimination
+            eliminatedPlayer: user.uid, // Player who was eliminated
+            doubleTimeout: false // Single timeout
+          });
+          
+          console.log("✅ Current player automatically eliminated by timeout - Match ended");
+        }
+        // Case 2: Current player has made a guess but opponent hasn't - eliminate opponent
+        else if (currentPlayerHasGuess && !otherPlayerHasGuess && otherPlayerId) {
+          console.log("🔍 Current player already verified, eliminating opponent by timeout:", otherPlayerId);
+          
+          const otherPlayer = players[otherPlayerId] || {};
+          const updatedPlayers = {
+            ...players,
+            [otherPlayerId]: {
+              ...otherPlayer,
+              hp: 0 // Eliminate opponent
+            }
+          };
+          
+          // Add timeout guess for opponent (elimination)
           roundGuesses[otherPlayerId] = { 
             dist: GAME_CONFIG.TIMEOUT_DISTANCE, 
             guess: { lat: 0, lng: 0 }, 
@@ -506,40 +528,91 @@ export default function Duels() {
             timeout: true,
             eliminated: true
           };
+          
+          roundData.guesses = roundGuesses;
+          rounds[round] = roundData;
+          
+          // End the match immediately
+          tx.update(mRef, {
+            players: updatedPlayers,
+            rounds: rounds,
+            state: GAME_STATUS.FINISHED, // End the match
+            finishedAt: new Date(),
+            timeoutElimination: true, // Mark as timeout elimination
+            eliminatedPlayer: otherPlayerId, // Opponent who was eliminated
+            doubleTimeout: false // Single timeout
+          });
+          
+          console.log("✅ Opponent automatically eliminated by timeout - Current player wins");
         }
-        
-        // Add timeout guess for current player (elimination)
-        roundGuesses[user.uid] = { 
-          dist: GAME_CONFIG.TIMEOUT_DISTANCE, 
-          guess: guess || { lat: 0, lng: 0 }, 
-          distance: GAME_CONFIG.TIMEOUT_DISTANCE,
-          points: 0,
-          timestamp: new Date(),
-          timeout: true,
-          eliminated: true // Mark as eliminated by timeout
-        };
-        
-        roundData.guesses = roundGuesses;
-        rounds[round] = roundData;
-        
-        // End the match immediately
-        tx.update(mRef, {
-          players: updatedPlayers,
-          rounds: rounds,
-          state: GAME_STATUS.FINISHED, // End the match
-          finishedAt: new Date(),
-          timeoutElimination: true, // Mark as timeout elimination
-          eliminatedPlayer: user.uid, // Player who was eliminated
-          doubleTimeout: isDoubleTimeout // Mark if both players timed out
-        });
-        
-        console.log("✅ Player automatically eliminated by timeout - Match ended. Double timeout:", isDoubleTimeout);
+        // Case 3: Both players have made guesses - this shouldn't happen with timeout
+        else if (currentPlayerHasGuess && otherPlayerHasGuess) {
+          console.log("🔍 Both players have made guesses - no timeout elimination needed");
+          return;
+        }
+        // Case 4: Neither player has made a guess - double timeout
+        else if (!currentPlayerHasGuess && !otherPlayerHasGuess) {
+          console.log("🔍 Double timeout detected - eliminating both players");
+          
+          const updatedPlayers = {
+            ...players,
+            [user.uid]: {
+              ...currentPlayer,
+              hp: 0
+            }
+          };
+          
+          if (otherPlayerId) {
+            updatedPlayers[otherPlayerId] = {
+              ...players[otherPlayerId],
+              hp: 0
+            };
+            
+            // Add timeout guess for the other player too
+            roundGuesses[otherPlayerId] = { 
+              dist: GAME_CONFIG.TIMEOUT_DISTANCE, 
+              guess: { lat: 0, lng: 0 }, 
+              distance: GAME_CONFIG.TIMEOUT_DISTANCE,
+              points: 0,
+              timestamp: new Date(),
+              timeout: true,
+              eliminated: true
+            };
+          }
+          
+          // Add timeout guess for current player (elimination)
+          roundGuesses[user.uid] = { 
+            dist: GAME_CONFIG.TIMEOUT_DISTANCE, 
+            guess: guess || { lat: 0, lng: 0 }, 
+            distance: GAME_CONFIG.TIMEOUT_DISTANCE,
+            points: 0,
+            timestamp: new Date(),
+            timeout: true,
+            eliminated: true
+          };
+          
+          roundData.guesses = roundGuesses;
+          rounds[round] = roundData;
+          
+          // End the match immediately
+          tx.update(mRef, {
+            players: updatedPlayers,
+            rounds: rounds,
+            state: GAME_STATUS.FINISHED, // End the match
+            finishedAt: new Date(),
+            timeoutElimination: true, // Mark as timeout elimination
+            eliminatedPlayer: user.uid, // Player who was eliminated
+            doubleTimeout: true // Mark if both players timed out
+          });
+          
+          console.log("✅ Both players eliminated by double timeout - Match ended");
+        }
       });
       
       setConfirmed(true);
       setHasProcessedCurrentRound(true);
       
-      console.log("✅ AUTOMATIC ELIMINATION applied - Rival wins the match");
+      console.log("✅ AUTOMATIC ELIMINATION applied");
       } catch (error) {
       console.error("❌ Error applying automatic elimination:", error);
     } finally {
@@ -850,6 +923,12 @@ export default function Duels() {
       lastProcessedMatchIdRef.current = null;
       currentRoundRef.current = 0;
       
+      // Clean loading timeout
+      if (loadingTimeoutRef) {
+        clearTimeout(loadingTimeoutRef);
+        setLoadingTimeoutRef(null);
+      }
+      
       console.log("✅ State completely reset");
     };
     
@@ -1096,19 +1175,23 @@ export default function Duels() {
         setStatus(GAME_STATUS.FINISHED);
         const players = m.players || {};
         
-        // Detect winner: the one who doesn't have 0 points is the winner
-        const playersArray = Object.entries(players).map(([uid, p]) => ({ uid, ...p }));
-        
+        // Check if it's a loading timeout (no winners)
+        if (m.loadingTimeout) {
+          console.log("🎯 Loading timeout detected - no winners");
+          setWinner(null); // No winner in loading timeout
+        }
         // Check if it's a double timeout (both players lose)
-        if (m.doubleTimeout) {
+        else if (m.doubleTimeout) {
           console.log("🎯 Double timeout detected - both players lose");
           setWinner(null); // No winner in double timeout
         } else {
-        const winner = playersArray.find(p => p.hp > 0) || playersArray[0]; // fallback to first player
-        console.log("Players HP:", Object.entries(players).map(([uid, p]) => `${uid}: ${p.hp}`));
-        console.log("Winner detected:", winner);
-        console.log("Current user UID:", user?.uid);
-        setWinner(winner);
+          // Detect winner: the one who doesn't have 0 points is the winner
+          const playersArray = Object.entries(players).map(([uid, p]) => ({ uid, ...p }));
+          const winner = playersArray.find(p => p.hp > 0) || playersArray[0]; // fallback to first player
+          console.log("Players HP:", Object.entries(players).map(([uid, p]) => `${uid}: ${p.hp}`));
+          console.log("Winner detected:", winner);
+          console.log("Current user UID:", user?.uid);
+          setWinner(winner);
           
           // Update cups for the winner and losses for the loser
           // Only update stats if they haven't been updated yet (check for statsProcessed flag)
@@ -1241,6 +1324,14 @@ export default function Duels() {
       setGallery(rd.items);
       const obs = rd.items[rd.index];
       setObservation(obs);
+      
+      // Clear loading timeout since round data is now loaded
+      if (loadingTimeoutRef) {
+        console.log("✅ Clearing loading timeout - round data loaded successfully");
+        clearTimeout(loadingTimeoutRef);
+        setLoadingTimeoutRef(null);
+      }
+      
         // DON'T reset timer here - only when new round really starts
       
         // Timer will start in separate useEffect
@@ -1250,7 +1341,35 @@ export default function Duels() {
         loadObservations(matchId, m, user.uid);
        } else if (!rd) {
          console.log("⏳ Non-host waiting for host to load round data - User:", user.uid, "Host:", m.hostUid, "Round data:", rd);
-        // Non-hosts wait for host to load data
+        // Non-hosts wait for host to load data - start loading timeout
+        if (!loadingTimeoutRef) {
+          console.log("⏰ Starting loading timeout for non-host player");
+          const timeout = setTimeout(async () => {
+            console.log("⏰ Loading timeout reached - ending match due to loading timeout");
+            try {
+              const mRef = doc(db, "duel_matches", matchId);
+              await runTransaction(db, async (tx) => {
+                const snap = await tx.get(mRef);
+                if (!snap.exists()) return;
+                
+                const data = snap.data();
+                if (data.state === GAME_STATUS.FINISHED) return;
+                
+                // End match due to loading timeout - no winners
+                tx.update(mRef, {
+                  state: GAME_STATUS.FINISHED,
+                  finishedAt: new Date(),
+                  loadingTimeout: true, // Mark as loading timeout
+                  loadingTimeoutReason: "Loading timeout - host disconnected or failed to load"
+                });
+              });
+              console.log("✅ Match ended due to loading timeout");
+            } catch (error) {
+              console.error("❌ Error ending match due to loading timeout:", error);
+            }
+          }, GAME_CONFIG.LOADING_TIMEOUT);
+          setLoadingTimeoutRef(timeout);
+        }
       }
     });
     
@@ -1291,7 +1410,7 @@ export default function Duels() {
     }
   }, [showResults, roundResults, status, resetTimer]);
 
-  // Game timer (90 seconds per round) - Only runs when observation is loaded AND results are not shown
+  // Game timer (30 seconds per round) - Only runs when observation is loaded AND results are not shown
   useEffect(() => {
     // Don't start timer if results are being shown
     if (showResults) {
@@ -1302,28 +1421,21 @@ export default function Duels() {
     if (status === GAME_STATUS.MATCHED && match && match.state !== GAME_STATUS.FINISHED && !showResults && !roundLocked && observation && 
         (!countdownStartedRef.current || match.round !== currentRoundRef.current) && 
         match.rounds && match.rounds[match.round] && match.rounds[match.round].items) {
-      console.log("⏰ Starting 90 second timer for round", match.round);
+      console.log("⏰ Starting 30 second timer for round", match.round);
       console.log("🔍 Timer state - started:", countdownStartedRef.current, "currentRound:", currentRoundRef.current, "newRound:", match.round);
       console.log("🔍 Conditions - status:", status, "match:", !!match, "showResults:", showResults, "roundLocked:", roundLocked, "observation:", !!observation);
       console.log("🔍 Match data:", { id: match.id, state: match.state, round: match.round, players: match.players });
       console.log("🔍 Round data:", { hasRounds: !!match.rounds, currentRound: match.round, hasItems: !!(match.rounds && match.rounds[match.round] && match.rounds[match.round].items) });
       
       const onTimeout = () => {
-        // Only apply automatic elimination if player hasn't confirmed AND hasn't clicked AND game hasn't finished AND match has round data
-        if (!confirmed && !timeoutProcessingRef.current && !guess && status !== GAME_STATUS.FINISHED && 
+        // Apply timeout logic if game hasn't finished AND match has round data
+        if (!timeoutProcessingRef.current && status !== GAME_STATUS.FINISHED && 
                 match && match.rounds && match.rounds[match.round] && match.rounds[match.round].items) {
-          console.log("⏰ AUTOMATIC ELIMINATION: Player didn't click or verify in time:", user?.uid);
-              handleTimeout();
-            } else {
-          console.log("⏰ Player already confirmed, clicked, elimination in process, game finished or match without data, skipping:", {
-                confirmed,
-                hasGuess: !!guess,
-                processing: timeoutProcessingRef.current,
-                status: status,
-                userId: user?.uid,
-                hasMatchData: !!(match && match.rounds && match.rounds[match.round] && match.rounds[match.round].items)
-              });
-            }
+          console.log("⏰ TIMEOUT: Checking for elimination - Player confirmed:", confirmed, "hasGuess:", !!guess);
+          handleTimeout();
+        } else {
+          console.log("⏰ Timeout skipped - processing:", timeoutProcessingRef.current, "status:", status, "hasMatchData:", !!(match && match.rounds && match.rounds[match.round] && match.rounds[match.round].items));
+        }
       };
       
       startTimer(match.round, onTimeout);
@@ -1336,8 +1448,15 @@ export default function Duels() {
       // Clean timer when game ends or results are shown
       stopTimer();
       console.log("🧹 Timer cleaned - game finished or showing results");
+      
+      // Also clean loading timeout
+      if (loadingTimeoutRef) {
+        console.log("🧹 Loading timeout cleaned - game finished or showing results");
+        clearTimeout(loadingTimeoutRef);
+        setLoadingTimeoutRef(null);
+      }
     }
-  }, [status, showResults, stopTimer]);
+  }, [status, showResults, stopTimer, loadingTimeoutRef]);
 
   // Heartbeat system - send activity every 10 seconds
   useEffect(() => {
@@ -2236,8 +2355,12 @@ export default function Duels() {
                       </div>
                     </div>
           
-          {/* Check if it's a double timeout (both players lose) */}
-          {match.doubleTimeout ? (
+          {/* Check if it's a loading timeout, double timeout, or normal winner */}
+          {match.loadingTimeout ? (
+            <div style={{ marginTop: 12, fontSize: "24px", fontWeight: "bold", color: "#e74c3c" }}>
+              ⏰ Match ended due to loading timeout!
+            </div>
+          ) : match.doubleTimeout ? (
             <div style={{ marginTop: 12, fontSize: "24px", fontWeight: "bold", color: "#e74c3c" }}>
               ⏰ Both players lost due to timeout!
             </div>
@@ -2249,7 +2372,9 @@ export default function Duels() {
           
           <div style={{ marginTop: 8, color: "#ecf0f1" }}>
              {(() => {
-               if (match.doubleTimeout) {
+               if (match.loadingTimeout) {
+                 return "⏰ The host disconnected during loading. No winners!";
+               } else if (match.doubleTimeout) {
                  return "⏰ Neither player verified in time. Both lost!";
                } else if (winner) {
                const isWinner = winner.uid === user?.uid;
@@ -2296,6 +2421,12 @@ export default function Duels() {
                setCurrentRoundDisplayed(0);
                lastProcessedRoundRef.current = 0;
                lastProcessedMatchIdRef.current = null;
+               
+               // Clean loading timeout
+               if (loadingTimeoutRef) {
+                 clearTimeout(loadingTimeoutRef);
+                 setLoadingTimeoutRef(null);
+               }
                
                console.log("✅ Estado completamente limpiado");
                
