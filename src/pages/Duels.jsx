@@ -73,7 +73,7 @@ const updatePlayerCups = async (playerUid, playerNickname, isWin) => {
 // Constants
 const GAME_CONFIG = {
   INITIAL_HP: 6000,
-  ROUND_TIMER: 30, // seconds
+  ROUND_TIMER: 90, // seconds
   RESULTS_COUNTDOWN: 10, // seconds
   HEARTBEAT_INTERVAL: 10000, // milliseconds
   MAX_OBSERVATION_ATTEMPTS: 15,
@@ -1410,7 +1410,7 @@ export default function Duels() {
     }
   }, [showResults, roundResults, status, resetTimer]);
 
-  // Game timer (30 seconds per round) - Only runs when observation is loaded AND results are not shown
+  // Game timer (90 seconds per round) - Only runs when observation is loaded AND results are not shown
   useEffect(() => {
     // Don't start timer if results are being shown
     if (showResults) {
@@ -1421,7 +1421,7 @@ export default function Duels() {
     if (status === GAME_STATUS.MATCHED && match && match.state !== GAME_STATUS.FINISHED && !showResults && !roundLocked && observation && 
         (!countdownStartedRef.current || match.round !== currentRoundRef.current) && 
         match.rounds && match.rounds[match.round] && match.rounds[match.round].items) {
-      console.log("⏰ Starting 30 second timer for round", match.round);
+      console.log("⏰ Starting 90 second timer for round", match.round);
       console.log("🔍 Timer state - started:", countdownStartedRef.current, "currentRound:", currentRoundRef.current, "newRound:", match.round);
       console.log("🔍 Conditions - status:", status, "match:", !!match, "showResults:", showResults, "roundLocked:", roundLocked, "observation:", !!observation);
       console.log("🔍 Match data:", { id: match.id, state: match.state, round: match.round, players: match.players });
