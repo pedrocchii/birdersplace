@@ -6,18 +6,29 @@ import UserBadge from "./components/UserBadge";
 import Duels from "./pages/Duels";
 import RoomLobby from "./pages/RoomLobby";
 import MultiplayerGame from "./pages/MultiplayerGame";
+import AnalyticsDashboard from "./components/AnalyticsDashboard";
+import { useAnalytics } from "./hooks/useAnalytics";
 
 export default function App() {
   const [view, setView] = useState("menu"); // menu | single | multi | login
+  const analytics = useAnalytics();
 
   // Permite abrir vistas directamente con ?view=
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const v = params.get("view");
-    if (v && ["menu","single","multi","login","duels","rooms","multiplayer"].includes(v)) {
+    if (v && ["menu","single","multi","login","duels","rooms","multiplayer","analytics"].includes(v)) {
       setView(v);
     }
   }, []);
+
+  // Track view changes
+  useEffect(() => {
+    analytics.trackEvent('page_view', {
+      page_name: view,
+      page_path: `/${view}`,
+    });
+  }, [view, analytics]);
 
   if (view === "single") return (<>
     <UserBadge />
@@ -83,6 +94,13 @@ export default function App() {
     </>);
   }
 
+  if (view === "analytics") {
+    return (<>
+      <UserBadge />
+      <AnalyticsDashboard onBack={() => setView("menu")} />
+    </>);
+  }
+
   // Menú principal
   return (
     <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
@@ -111,7 +129,10 @@ export default function App() {
         <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
           {/* Competitive Mode - Featured */}
           <div style={{ position: "relative" }}>
-            <button onClick={() => setView("duels")} style={{ 
+            <button onClick={() => {
+              analytics.trackEvent('button_click', { button: 'duels', location: 'main_menu' });
+              setView("duels");
+            }} style={{ 
               padding: "1rem 1.2rem", 
               background: "linear-gradient(135deg, #10b981 0%, #059669 100%)", 
               color: "#fff", 
@@ -167,7 +188,10 @@ export default function App() {
             </div>
             
             <div style={{ display: "grid", gap: 8 }}>
-              <button onClick={() => setView("rooms")} style={{ 
+              <button onClick={() => {
+                analytics.trackEvent('button_click', { button: 'rooms', location: 'main_menu' });
+                setView("rooms");
+              }} style={{ 
                 padding: "0.7rem 1rem", 
                 background: "#8b5cf6", 
                 color: "#fff", 
@@ -180,7 +204,10 @@ export default function App() {
                 🏠 Duel rooms
               </button>
               
-              <button onClick={() => setView("multiplayer")} style={{ 
+              <button onClick={() => {
+                analytics.trackEvent('button_click', { button: 'multiplayer', location: 'main_menu' });
+                setView("multiplayer");
+              }} style={{ 
                 padding: "0.7rem 1rem", 
                 background: "#f59e0b", 
                 color: "#fff", 
@@ -197,7 +224,10 @@ export default function App() {
 
           {/* Other Options */}
           <div style={{ display: "grid", gap: 8, marginTop: "16px" }}>
-            <button onClick={() => setView("single")} style={{ 
+            <button onClick={() => {
+              analytics.trackEvent('button_click', { button: 'single_player', location: 'main_menu' });
+              setView("single");
+            }} style={{ 
               padding: "0.6rem 1rem", 
               background: "#374151", 
               color: "#fff", 
@@ -210,7 +240,10 @@ export default function App() {
               🎯 Single Player
             </button>
             
-            <button onClick={() => setView("login")} style={{ 
+            <button onClick={() => {
+              analytics.trackEvent('button_click', { button: 'login', location: 'main_menu' });
+              setView("login");
+            }} style={{ 
               padding: "0.6rem 1rem", 
               background: "#2563eb", 
               color: "#fff", 
@@ -221,6 +254,22 @@ export default function App() {
               fontSize: "14px"
             }}>
               🔐 Login
+            </button>
+            
+            <button onClick={() => {
+              analytics.trackEvent('button_click', { button: 'analytics', location: 'main_menu' });
+              setView("analytics");
+            }} style={{ 
+              padding: "0.6rem 1rem", 
+              background: "#7c3aed", 
+              color: "#fff", 
+              border: "none", 
+              borderRadius: 8, 
+              cursor: "pointer", 
+              fontWeight: 600,
+              fontSize: "14px"
+            }}>
+              📊 Analytics
             </button>
           </div>
         </div>
